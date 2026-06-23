@@ -1,0 +1,42 @@
+[project]
+name = "llm-gateway-client"
+version = "0.1.0"
+description = "ローカル LLM ゲートウェイ（local-llm-server / OpenAI 互換）に繋ぐ高レベルクライアント。エージェント共通のクライアントで、openai のボイラープレートを再実装しない。"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "ToPo-ToPo-ToPo" }]
+keywords = ["llm", "openai", "client", "local-llm", "gateway", "agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+    "Operating System :: OS Independent",
+]
+# 公式 openai SDK を土台にする（自動リトライ・型付き応答・ツール呼び出し/構造化出力）。
+# サーバー（ゲートウェイ）は別パッケージ local-llm-server。本パッケージは接続のみ。
+dependencies = [
+    "openai>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.urls]
+Repository = "https://github.com/ToPo-ToPo-ToPo/llm-gateway-client"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["llm_gateway_client*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
