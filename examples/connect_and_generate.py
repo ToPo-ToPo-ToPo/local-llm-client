@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["llm-gateway-client>=0.1"]
+# dependencies = ["local-llm-client>=0.1"]
 # ///
 """ゲートウェイに接続して生成する最小サンプル（接続専用。サーバーは起動しない）。
 
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sys
 
-from llm_gateway_client import LLMClient, is_ready
+from local_llm_client import LLMClient, is_ready
 
 BASE_URL = "http://127.0.0.1:8799/v1"
 MODEL = "mlx-community/Qwen3.6-27B-4bit"

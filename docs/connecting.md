@@ -11,7 +11,7 @@
 （`str`）、`stream=True` で断片の `Iterator[str]` を返す。
 
 ```python
-from llm_gateway_client import LLMClient
+from local_llm_client import LLMClient
 
 llm = LLMClient(model="mlx-community/Qwen3.6-27B-4bit",
                 base_url="http://127.0.0.1:8799/v1")
@@ -34,7 +34,7 @@ llm.respond("これは何？", images=["plot.png"])                  # 画像（
 `ServerNotRunningError` を投げる（**サーバーは自前で起動しない**）。
 
 ```python
-from llm_gateway_client import connect, ServerNotRunningError
+from local_llm_client import connect, ServerNotRunningError
 
 try:
     llm = connect(model="mlx-community/Qwen3.6-27B-4bit",

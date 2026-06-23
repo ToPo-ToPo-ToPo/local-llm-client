@@ -4,7 +4,7 @@
 投げ、テキスト（or ストリーム）を受け取る」ラッパー。公式 `openai` SDK を土台にするため
 自動リトライ・型付きレスポンス・ツール呼び出し/構造化出力などの高度機能もそのまま使える。
 
-    from llm_gateway_client import LLMClient
+    from local_llm_client import LLMClient
 
     llm = LLMClient(model="mlx-community/Qwen3.6-27B-4bit",
                     base_url="http://127.0.0.1:8799/v1")
@@ -13,7 +13,7 @@
 起動中のゲートウェイに繋ぐワンライナー（未起動なら親切なエラー。サーバーは起動しない）
 なら connect():
 
-    from llm_gateway_client import connect
+    from local_llm_client import connect
 
     llm = connect(model="mlx-community/Qwen3.6-27B-4bit",
                   base_url="http://127.0.0.1:8799/v1")

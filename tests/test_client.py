@@ -5,9 +5,9 @@ import base64
 
 import pytest
 
-from llm_gateway_client import ServerNotRunningError
-from llm_gateway_client import client as client_mod
-from llm_gateway_client.client import (
+from local_llm_client import ServerNotRunningError
+from local_llm_client import client as client_mod
+from local_llm_client.client import (
     LLMClient,
     build_user_content,
     connect,

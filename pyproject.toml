@@ -1,5 +1,5 @@
 [project]
-name = "llm-gateway-client"
+name = "local-llm-client"
 version = "0.1.0"
 description = "ローカル LLM ゲートウェイ（local-llm-server / OpenAI 互換）に繋ぐ高レベルクライアント。エージェント共通のクライアントで、openai のボイラープレートを再実装しない。"
 readme = "README.md"
@@ -29,14 +29,14 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/ToPo-ToPo-ToPo/llm-gateway-client"
+Repository = "https://github.com/ToPo-ToPo-ToPo/local-llm-client"
 
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["llm_gateway_client*"]
+include = ["local_llm_client*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

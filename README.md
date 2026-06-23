@@ -1,4 +1,4 @@
-# llm-gateway-client
+# local-llm-client
 
 ローカル LLM ゲートウェイ（[local-llm-server](https://github.com/ToPo-ToPo-ToPo/local-llm-server) / OpenAI 互換）に繋ぐ**高レベルクライアント**。
 
@@ -10,7 +10,7 @@
 ## インストール
 
 ```bash
-uv add llm-gateway-client
+uv add local-llm-client
 ```
 
 ## 使い方
@@ -18,7 +18,7 @@ uv add llm-gateway-client
 ゲートウェイ（`local-llm-server`）を起動しておき、公開ポートに繋ぐだけ。
 
 ```python
-from llm_gateway_client import LLMClient
+from local_llm_client import LLMClient
 
 llm = LLMClient(
     model="mlx-community/Qwen3.6-27B-4bit",
@@ -35,7 +35,7 @@ for piece in llm.respond("長い説明を", stream=True):
 起動確認付きのワンライナー（未起動なら親切なエラー。サーバーは起動しない）:
 
 ```python
-from llm_gateway_client import connect, ServerNotRunningError
+from local_llm_client import connect, ServerNotRunningError
 
 try:
     llm = connect(model="mlx-community/Qwen3.6-27B-4bit",

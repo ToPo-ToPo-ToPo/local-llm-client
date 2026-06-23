@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["llm-gateway-client>=0.1"]
+# dependencies = ["local-llm-client>=0.1"]
 # ///
 """ゲートウェイ経由で生成し、速度（tok/s）を測るサンプル（接続専用）。
 
@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 import time
 
-from llm_gateway_client import LLMClient, is_ready
+from local_llm_client import LLMClient, is_ready
 
 BASE_URL = "http://127.0.0.1:8799/v1"
 MODEL = "mlx-community/Qwen3.6-27B-4bit"
