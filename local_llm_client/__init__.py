@@ -17,11 +17,19 @@ from .client import (
     DEFAULT_MODEL,
     LLMClient,
     ServerNotRunningError,
+    TextSink,
+    build_tool_spec,
     build_user_content,
+    check_model_served,
     connect,
     is_ready,
+    list_models,
+    models_match,
+    parse_host_port,
+    parse_prompt_tool_calls,
     thinking_extra_body,
     to_image_url,
+    transform_messages_for_prompt,
 )
 
 __all__ = [
@@ -34,4 +42,14 @@ __all__ = [
     "thinking_extra_body",
     "DEFAULT_MODEL",
     "DEFAULT_BASE_URL",
+    # 接続・モデル確認ヘルパ（ゲートウェイの死活/カタログ確認）
+    "list_models",
+    "models_match",
+    "parse_host_port",
+    "check_model_served",
+    # tool-calling プロトコル（prompt-mode）
+    "TextSink",
+    "build_tool_spec",
+    "transform_messages_for_prompt",
+    "parse_prompt_tool_calls",
 ]

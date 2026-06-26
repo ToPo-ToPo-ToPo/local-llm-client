@@ -96,6 +96,13 @@ class _FakeOpenAI:
 @pytest.fixture
 def fake_openai(monkeypatch):
     monkeypatch.setattr(client_mod, "OpenAI", _FakeOpenAI)
+    # 在席セッションのネットワーク I/O とハートビートスレッドを無効化（単体テストを隔離）。
+    # 呼び出しは記録して、必要なテストが検証できるようにする。
+    calls: list[tuple] = []
+    monkeypatch.setattr(client_mod, "_post_session",
+                        lambda base, path, payload, **k: calls.append((path, payload)) or {})
+    monkeypatch.setattr(client_mod, "SESSION_HEARTBEAT_INTERVAL", 0.0)
+    return calls
 
 
 def test_respond_non_stream_returns_text(fake_openai):
@@ -164,3 +171,138 @@ def test_thinking_extra_body_emits_both_forms():
     off = thinking_extra_body(False)
     assert off["enable_thinking"] is False
     assert off["chat_template_kwargs"]["enable_thinking"] is False
+
+
+# --- chat()（tool-calling）---------------------------------------------------
+class _Delta:
+    def __init__(self, content=None, tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _StreamChoice:
+    def __init__(self, delta):
+        self.choices = [type("C", (), {"delta": delta})()]
+
+
+def _fake_stream(pieces):
+    for p in pieces:
+        yield _StreamChoice(_Delta(content=p))
+
+
+def test_chat_prompt_mode_parses_tool_calls(monkeypatch):
+    import local_llm_client.client as c
+
+    class FakeChat:
+        def create(self, **kw):
+            # prompt-mode はストリーム。tool ブロックを含む本文を返す。
+            return _fake_stream(['実行します\n', '```tool\n{"name":"run_command",',
+                                 '"arguments":{"command":"ls"}}\n```'])
+    class FakeOpenAI:
+        def __init__(self, *a, **k): self.chat = type("X", (), {"completions": FakeChat()})()
+    monkeypatch.setattr(c, "OpenAI", FakeOpenAI)
+
+    llm = c.LLMClient(model="m", tool_mode="prompt", stream=True)
+    out = []
+    res = llm.chat(
+        [{"role": "system", "content": "sys"}, {"role": "user", "content": "ls して"}],
+        tools=[{"function": {"name": "run_command", "description": "", "parameters": {}}}],
+        on_text=out.append,
+    )
+    assert res.tool_calls and res.tool_calls[0].function.name == "run_command"
+    assert "ls" in res.tool_calls[0].function.arguments
+    assert "".join(out).strip().startswith("実行します")  # 生テキストを on_text に流す
+
+
+# --- 接続・モデル確認ヘルパ -------------------------------------------------
+def test_models_match_basename_and_unknown():
+    from local_llm_client import models_match
+    assert models_match("org/Foo", "/abs/path/Foo") is True
+    assert models_match("a/X", "b/Y") is False
+    assert models_match(None, "x") is True   # 不明なら誤検知しない
+
+
+def test_parse_host_port():
+    from local_llm_client import parse_host_port
+    assert parse_host_port("http://127.0.0.1:8799/v1") == ("127.0.0.1", 8799)
+    assert parse_host_port("http://host/v1") == ("host", 8799)  # 既定 8799
+
+
+def test_list_models_and_check_served(monkeypatch):
+    import io, json as _json
+    import local_llm_client.client as c
+    from local_llm_client import list_models, check_model_served
+
+    def fake_urlopen(url, timeout=5.0):
+        body = _json.dumps({"data": [{"id": "org/A"}, {"id": "org/B"}]}).encode()
+        r = io.BytesIO(body); r.status = 200
+        r.__enter__ = lambda s=r: s; r.__exit__ = lambda *a: False
+        return r
+    monkeypatch.setattr(c.urllib.request, "urlopen", fake_urlopen)
+
+    assert list_models("http://x/v1") == ["org/A", "org/B"]
+    assert check_model_served("http://x/v1", "org/A") == []          # 提供あり→警告なし
+    warns = check_model_served("http://x/v1", "org/Z")               # カタログに無い
+    assert warns and "does not offer" in warns[0]
+
+
+# --- 在席セッション（即時アンロード） --------------------------------------
+def test_session_registers_on_init(fake_openai):
+    # 既定で register が送られ、agent_id と model が乗る。
+    llm = LLMClient(model="m", base_url="http://gw/v1")
+    paths = [c[0] for c in fake_openai]
+    assert "/admin/sessions/register" in paths
+    reg = next(p for p in fake_openai if p[0] == "/admin/sessions/register")
+    assert reg[1]["model"] == "m" and reg[1]["agent_id"] == llm.agent_id
+
+
+def test_session_disabled_sends_nothing(fake_openai):
+    LLMClient(model="m", session=False)
+    assert fake_openai == []
+
+
+def test_session_custom_agent_id(fake_openai):
+    llm = LLMClient(model="m", agent_id="agent-7")
+    assert llm.agent_id == "agent-7"
+    reg = next(p for p in fake_openai if p[0] == "/admin/sessions/register")
+    assert reg[1]["agent_id"] == "agent-7"
+
+
+def test_close_releases_session(fake_openai):
+    llm = LLMClient(model="m", agent_id="agent-7")
+    assert llm.closed is False
+    llm.close()
+    assert llm.closed is True
+    rel = [p for p in fake_openai if p[0] == "/admin/sessions/release"]
+    assert rel and rel[-1][1] == {"agent_id": "agent-7"}
+
+
+def test_close_is_idempotent(fake_openai):
+    llm = LLMClient(model="m", agent_id="agent-7")
+    llm.close()
+    llm.close()
+    rel = [p for p in fake_openai if p[0] == "/admin/sessions/release"]
+    assert len(rel) == 1  # 2 回目は no-op
+
+
+def test_context_manager_releases_on_exit(fake_openai):
+    with LLMClient(model="m", agent_id="agent-7") as llm:
+        assert llm.respond("hi") == "done"
+    rel = [p for p in fake_openai if p[0] == "/admin/sessions/release"]
+    assert rel and rel[-1][1] == {"agent_id": "agent-7"}
+
+
+def test_connect_passes_session_through(fake_openai, monkeypatch):
+    monkeypatch.setattr(client_mod, "is_ready", lambda url, *a, **k: True)
+    llm = connect(model="m", base_url="http://127.0.0.1:8799/v1", agent_id="agent-9")
+    assert llm.agent_id == "agent-9"
+    assert any(p[0] == "/admin/sessions/register" for p in fake_openai)
+
+
+def test_post_session_swallows_errors(monkeypatch):
+    # ゲートウェイ未起動/未対応でも例外を投げず None（エージェント本体を止めない）。
+    import urllib.error
+    def boom(*a, **k):
+        raise urllib.error.URLError("refused")
+    monkeypatch.setattr(client_mod.urllib.request, "urlopen", boom)
+    assert client_mod._post_session("http://gw/v1", "/admin/sessions/register", {"x": 1}) is None
