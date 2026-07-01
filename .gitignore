@@ -8,3 +8,6 @@ dist/
 .pytest_cache/
 .python-version
 .claude/
+
+# 共有クライアント設定（api_key 等の秘密を含みうる。誤コミット防止）
+local-llm-client.toml

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from .client import (
+    CONFIG_FILENAME,
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
     LLMClient,
@@ -23,6 +24,7 @@ from .client import (
     check_model_served,
     connect,
     is_ready,
+    load_client_config,
     list_models,
     models_match,
     parse_host_port,
@@ -42,6 +44,9 @@ __all__ = [
     "thinking_extra_body",
     "DEFAULT_MODEL",
     "DEFAULT_BASE_URL",
+    # 共有設定ファイル（local-llm-client.toml）の発見・読み込み
+    "load_client_config",
+    "CONFIG_FILENAME",
     # 接続・モデル確認ヘルパ（ゲートウェイの死活/カタログ確認）
     "list_models",
     "models_match",

@@ -16,6 +16,15 @@ from local_llm_client.client import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_cwd(tmp_path, monkeypatch):
+    """既定の設定探索を空の一時ディレクトリから始めさせる（ユーザーの実 local-llm-client.toml を
+    拾わせない）。明示 start を渡す発見テストや load_client_config を差し替えるテストは影響なし。"""
+    d = tmp_path / "_no_config"
+    d.mkdir()
+    monkeypatch.chdir(d)
+
+
 # --- マルチモーダル content 構築 -------------------------------------------
 def test_build_user_content_text_only():
     assert build_user_content("hello") == "hello"
@@ -368,3 +377,61 @@ def test_client_default_api_key(fake_openai):
     from local_llm_client.client import DEFAULT_API_KEY
     llm = LLMClient(model="m", base_url="http://gw/v1")
     assert llm.api_key == DEFAULT_API_KEY  # 既定（環境変数 LOCAL_LLM_API_KEY か "not-needed"）
+
+
+# --- 共有設定ファイル（local-llm-client.toml）の発見・解決 -------------------
+def test_find_config_file_walks_up_nearest_wins(tmp_path):
+    from local_llm_client.client import _find_config_file, CONFIG_FILENAME
+    (tmp_path / CONFIG_FILENAME).write_text('api_key = "root"\n', encoding="utf-8")
+    deep = tmp_path / "a" / "b" / "c"
+    deep.mkdir(parents=True)
+    # 近くに無ければ親（root）を拾う
+    assert _find_config_file(deep) == tmp_path / CONFIG_FILENAME
+    # 近い方があればそちらが優先
+    (tmp_path / "a" / CONFIG_FILENAME).write_text('api_key = "near"\n', encoding="utf-8")
+    assert _find_config_file(deep) == tmp_path / "a" / CONFIG_FILENAME
+
+
+def test_load_client_config_reads_and_missing(tmp_path):
+    from local_llm_client.client import load_client_config, CONFIG_FILENAME
+    sub = tmp_path / "proj"
+    sub.mkdir()
+    assert load_client_config(sub) == {}  # まだ設定ファイルが無い
+    (tmp_path / CONFIG_FILENAME).write_text(
+        'api_key = "K"\nbase_url = "http://x/v1"\n', encoding="utf-8")
+    cfg = load_client_config(sub)          # 親に置いたファイルを拾う
+    assert cfg["api_key"] == "K" and cfg["base_url"] == "http://x/v1"
+
+
+def test_load_client_config_broken_toml_is_empty(tmp_path):
+    from local_llm_client.client import load_client_config, CONFIG_FILENAME
+    (tmp_path / CONFIG_FILENAME).write_text("this is : not valid = toml [", encoding="utf-8")
+    assert load_client_config(tmp_path) == {}  # 壊れていても例外を投げず {}
+
+
+def test_resolve_endpoint_precedence(monkeypatch):
+    from local_llm_client.client import _resolve_endpoint, DEFAULT_BASE_URL, DEFAULT_API_KEY
+    # 設定ファイルに base_url / api_key がある想定
+    monkeypatch.setattr(client_mod, "load_client_config",
+                        lambda *a, **k: {"base_url": "http://file/v1", "api_key": "K"})
+    # 未指定 → ファイルの値
+    assert _resolve_endpoint(None, None) == ("http://file/v1", "K")
+    # 明示引数はファイルより優先
+    assert _resolve_endpoint("http://arg/v1", "ARG") == ("http://arg/v1", "ARG")
+    # ファイルが空なら既定
+    monkeypatch.setattr(client_mod, "load_client_config", lambda *a, **k: {})
+    assert _resolve_endpoint(None, None) == (DEFAULT_BASE_URL, DEFAULT_API_KEY)
+
+
+def test_client_picks_up_discovered_api_key(fake_openai, monkeypatch):
+    # エージェントが api_key を渡さなくても、共有設定ファイルのキーが使われる（コード変更ゼロ）。
+    monkeypatch.setattr(client_mod, "load_client_config", lambda *a, **k: {"api_key": "shared"})
+    llm = LLMClient(model="m", base_url="http://gw/v1")   # api_key は渡さない
+    assert llm.api_key == "shared"
+    assert llm.openai.init_kwargs["api_key"] == "shared"
+
+
+def test_explicit_api_key_overrides_config(fake_openai, monkeypatch):
+    monkeypatch.setattr(client_mod, "load_client_config", lambda *a, **k: {"api_key": "shared"})
+    llm = LLMClient(model="m", base_url="http://gw/v1", api_key="explicit")
+    assert llm.api_key == "explicit"

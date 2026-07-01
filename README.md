@@ -58,6 +58,17 @@ llm = LLMClient(model="mlx-community/Qwen3.6-27B-4bit",
                 base_url="http://192.168.1.5:8799/v1", api_key="＜キー＞")
 ```
 
+エージェントが多いときは、引数を渡す代わりに **`local-llm-client.toml`** をワークスペースに 1 つ置くと、
+cwd から親を遡って自動で読み込まれる（エージェント側のコード変更なしで `base_url`/`api_key` を集中管理）:
+
+```toml
+# 例: ~/my_programs/01_github/local-llm-client.toml
+api_key  = "＜キー＞"
+base_url = "http://192.168.1.5:8799/v1"
+```
+
+優先順位は「明示引数 > 設定ファイル > 既定」。詳細は [docs/connecting.md](docs/connecting.md#共有設定ファイル複数エージェントで集中管理)。
+
 ## 在席セッション（使い終わったら即メモリ解放）
 
 `LLMClient` は既定で、ゲートウェイに「このモデルを使う」と登録し、定期ハートビートを送る。

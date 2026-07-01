@@ -30,6 +30,7 @@ import json
 import mimetypes
 import re
 import threading
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -62,6 +63,57 @@ def _auth_headers(api_key: str | None) -> dict:
     （/admin/sessions/*）にも同じキーを載せるための共通ヘルパー。
     """
     return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
+# 共有設定ファイル名。cwd から親ディレクトリを遡って最初に見つかったものを使う（.git / .env と同じ流儀）。
+# 例: ワークスペース root（~/my_programs/01_github/）に 1 つ置けば、その下の全エージェントが拾う。
+# base_url / api_key を書ける。近いディレクトリの方が優先。エージェント側のコード変更なしに、
+# 認証ありゲートウェイへの接続情報を 1 か所で集中管理するための任意ファイル（無ければ既定値）。
+#   base_url = "http://192.168.1.5:8799/v1"
+#   api_key  = "＜キー＞"
+CONFIG_FILENAME = "local-llm-client.toml"
+
+
+def _find_config_file(start: Path | None = None) -> Path | None:
+    """start（既定 cwd）から親ディレクトリを遡って CONFIG_FILENAME を探す（最初の 1 つ）。"""
+    d = (start or Path.cwd()).resolve()
+    for parent in (d, *d.parents):
+        cand = parent / CONFIG_FILENAME
+        if cand.is_file():
+            return cand
+    return None
+
+
+def load_client_config(start: Path | None = None) -> dict:
+    """近傍の local-llm-client.toml を探して dict を返す（無ければ {}）。
+
+    cwd から親を遡り、最初に見つかったファイルを読む（近い方が優先）。base_url / api_key 等の
+    既定値をエージェント横断で 1 ファイルに置くための任意設定。読めない/壊れていても例外にせず
+    {} を返す（best-effort。設定ファイルの不備でエージェント本体を止めない）。
+    """
+    path = _find_config_file(start)
+    if path is None:
+        return {}
+    try:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _resolve_endpoint(base_url: str | None, api_key: str | None) -> tuple[str, str]:
+    """接続先を「明示引数 > 共有設定ファイル > 既定」の優先順で解決する。
+
+    base_url / api_key のどちらかが未指定（None）のときだけ共有設定ファイルを読む。両方明示なら
+    ファイルは読まない（ディスク I/O を避ける）。返り値は必ず文字列（api_key 未設定なら "not-needed"）。
+    """
+    if base_url is not None and api_key is not None:
+        return base_url, api_key
+    cfg = load_client_config()
+    resolved_base = base_url if base_url is not None else str(cfg.get("base_url") or DEFAULT_BASE_URL)
+    resolved_key = api_key if api_key is not None else str(cfg.get("api_key") or DEFAULT_API_KEY)
+    return resolved_base, resolved_key
 
 # 在席ハートビートの既定間隔（秒）。ゲートウェイの session_ttl（既定 90s）より十分短くする。
 # テストはこれを 0 にしてバックグラウンドスレッドを止められる（0/負で無効）。
@@ -379,8 +431,8 @@ class LLMClient:
         self,
         model: str = DEFAULT_MODEL,
         *,
-        base_url: str = DEFAULT_BASE_URL,
-        api_key: str = DEFAULT_API_KEY,
+        base_url: str | None = None,
+        api_key: str | None = None,
         temperature: float = 0.0,
         max_tokens: int | None = None,
         timeout: Any = None,
@@ -392,10 +444,11 @@ class LLMClient:
         heartbeat_interval: float | None = None,
     ) -> None:
         self.model = model
-        self.base_url = base_url
-        # 認証ありゲートウェイ用のキー。chat（openai SDK）だけでなく、raw HTTP の在席セッション
-        # にも同じキーを載せる。認証なしゲートウェイでは送られても無視される。
-        self.api_key = api_key
+        # base_url / api_key は「明示引数 > 共有設定ファイル(local-llm-client.toml) > 既定」で解決する。
+        # → エージェント側のコードを変えずに、ワークスペースに 1 ファイル置くだけで接続先/キーを集中管理できる。
+        self.base_url, self.api_key = _resolve_endpoint(base_url, api_key)
+        # api_key は chat（openai SDK）だけでなく raw HTTP の在席セッションにも同じものを載せる
+        # （認証なしゲートウェイでは送られても無視される）。
         self.temperature = float(temperature)
         self.max_tokens = max_tokens
         # ツール呼び出しの方式: native（API の function calling）/ prompt（仕様注入＋JSON解析）。
@@ -404,7 +457,7 @@ class LLMClient:
         self.stream = stream
         # timeout は float / httpx.Timeout / None。None のときは openai の既定に任せる
         # （ローカルの巨大モデルは初回応答が遅いので、長め/無制限を渡せるようにする）。
-        client_kwargs: dict[str, Any] = {"base_url": base_url, "api_key": api_key}
+        client_kwargs: dict[str, Any] = {"base_url": self.base_url, "api_key": self.api_key}
         if timeout is not None:
             client_kwargs["timeout"] = timeout
         self.openai = OpenAI(**client_kwargs)
@@ -651,8 +704,8 @@ class LLMClient:
 def connect(
     model: str = DEFAULT_MODEL,
     *,
-    base_url: str = DEFAULT_BASE_URL,
-    api_key: str = DEFAULT_API_KEY,
+    base_url: str | None = None,
+    api_key: str | None = None,
     temperature: float = 0.0,
     max_tokens: int | None = None,
     timeout: Any = None,
@@ -670,6 +723,9 @@ def connect(
     同じだが、未起動なら早めに親切なエラーを出す。在席セッション（即時アンロード）は既定で
     有効—不要なら `session=False`。
     """
+    # 死活確認の前に接続先を解決する（明示引数 > 共有設定ファイル > 既定）。解決済みを
+    # LLMClient にも明示で渡すので、LLMClient 側は設定ファイルを二度読みしない。
+    base_url, api_key = _resolve_endpoint(base_url, api_key)
     if not is_ready(base_url, api_key=api_key):
         raise ServerNotRunningError(
             f"No gateway responding at {base_url}. Start it first (the local-llm-server "
