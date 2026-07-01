@@ -3,7 +3,27 @@
 ゲートウェイ（[local-llm-server](https://github.com/ToPo-ToPo-ToPo/local-llm-server)）を起動したら、
 クライアントは公開ポート（既定 `http://127.0.0.1:8799/v1`）に繋ぎ、リクエストの `model` で使う
 モデルを選ぶ。`model` は `gateway.toml` に登録済みのものを指定する（初回リクエストで遅延ロード）。
-`api_key` はローカルなので任意（`"not-needed"` 等で可）。
+ローカル（認証なし）なら `api_key` は任意（`"not-needed"` 等で可）。
+
+## 別PC（ネットワーク越し）から繋ぐ
+
+ゲートウェイ側で `host = "0.0.0.0"` と `api_key` を設定して公開している場合（→ サーバー側の
+[docs/gateway.md「別PCから接続する」](https://github.com/ToPo-ToPo-ToPo/local-llm-server/blob/main/docs/gateway.md)）、
+クライアントは **`base_url` をゲートウェイPCのLAN IP** に、**`api_key` をそのキー** に合わせる。
+`api_key` は chat だけでなく在席セッション（即時アンロード）にも自動で載る。
+
+```python
+from local_llm_client import LLMClient
+
+llm = LLMClient(
+    model="mlx-community/Qwen3.6-27B-4bit",
+    base_url="http://192.168.1.5:8799/v1",   # ゲートウェイPCのIP
+    api_key="＜gateway.toml の api_key と同じ値＞",
+)
+```
+
+`api_key` が無い/違うと `401`。`/admin/*`（状態・設定変更）はゲートウェイPC本体からのみで、リモート
+からは使えない（chat と在席セッションだけがリモート可）。
 
 ## `LLMClient`（推奨）
 

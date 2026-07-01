@@ -306,3 +306,65 @@ def test_post_session_swallows_errors(monkeypatch):
         raise urllib.error.URLError("refused")
     monkeypatch.setattr(client_mod.urllib.request, "urlopen", boom)
     assert client_mod._post_session("http://gw/v1", "/admin/sessions/register", {"x": 1}) is None
+
+
+# --- API キー認証（ネットワーク公開ゲートウェイ向け） ------------------------
+def test_auth_headers():
+    from local_llm_client.client import _auth_headers
+    assert _auth_headers("k") == {"Authorization": "Bearer k"}
+    assert _auth_headers("") == {}
+    assert _auth_headers(None) == {}
+
+
+def _capturing_urlopen(store, body=b"{}"):
+    import io
+    def fake(req, timeout=5.0):
+        # Request のヘッダはキー先頭大文字（"Authorization"）で格納される。
+        store["auth"] = req.headers.get("Authorization")
+        r = io.BytesIO(body); r.status = 200
+        r.__enter__ = lambda s=r: s; r.__exit__ = lambda *a: False
+        return r
+    return fake
+
+
+def test_post_session_sends_authorization(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(client_mod.urllib.request, "urlopen", _capturing_urlopen(seen))
+    client_mod._post_session("http://gw/v1", "/admin/sessions/register",
+                             {"x": 1}, api_key="secret")
+    assert seen["auth"] == "Bearer secret"
+    # キー無しなら Authorization を付けない。
+    client_mod._post_session("http://gw/v1", "/admin/sessions/register", {"x": 1})
+    assert seen["auth"] is None
+
+
+def test_is_ready_and_list_models_send_key(monkeypatch):
+    import json as _json
+    body = _json.dumps({"data": [{"id": "m"}]}).encode()
+    seen = {}
+    monkeypatch.setattr(client_mod.urllib.request, "urlopen", _capturing_urlopen(seen, body))
+    assert client_mod.is_ready("http://x/v1", api_key="secret") is True
+    assert seen["auth"] == "Bearer secret"
+    assert client_mod.list_models("http://x/v1", api_key="secret") == ["m"]
+    assert seen["auth"] == "Bearer secret"
+
+
+def test_client_threads_api_key_to_openai_and_session(monkeypatch):
+    monkeypatch.setattr(client_mod, "OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(client_mod, "SESSION_HEARTBEAT_INTERVAL", 0.0)
+    seen: list[tuple] = []
+    monkeypatch.setattr(
+        client_mod, "_post_session",
+        lambda base, path, payload, **k: seen.append((path, k.get("api_key"))) or {},
+    )
+    llm = LLMClient(model="m", base_url="http://gw/v1", api_key="secret")
+    assert llm.api_key == "secret"
+    assert llm.openai.init_kwargs["api_key"] == "secret"   # chat（openai SDK）へ渡る
+    reg = next(a for a in seen if a[0] == "/admin/sessions/register")
+    assert reg[1] == "secret"                              # 在席セッションにも同じキー
+
+
+def test_client_default_api_key(fake_openai):
+    from local_llm_client.client import DEFAULT_API_KEY
+    llm = LLMClient(model="m", base_url="http://gw/v1")
+    assert llm.api_key == DEFAULT_API_KEY  # 既定（環境変数 LOCAL_LLM_API_KEY か "not-needed"）

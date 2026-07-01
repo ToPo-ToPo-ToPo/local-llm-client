@@ -50,6 +50,18 @@ def _noop_text(_text: str) -> None:  # pragma: no cover
 # ゲートウェイ（local-llm-server）の既定値。クライアントは公開ポートへ繋ぐだけ。
 DEFAULT_MODEL = "mlx-community/Qwen3.6-27B-4bit"
 DEFAULT_BASE_URL = "http://127.0.0.1:8799/v1"
+# 既定は "not-needed"（認証なしのローカルゲートウェイ向け）。認証ありのゲートウェイに繋ぐときは
+# LLMClient(..., api_key="＜キー＞") で実際のキーを渡す。認証なしなら送られても無視される。
+DEFAULT_API_KEY = "not-needed"
+
+
+def _auth_headers(api_key: str | None) -> dict:
+    """api_key があれば Authorization: Bearer ヘッダを作る（None/空なら付けない）。
+
+    chat（openai SDK 経由）だけでなく、raw HTTP で叩く /v1/models や在席セッション
+    （/admin/sessions/*）にも同じキーを載せるための共通ヘルパー。
+    """
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
 # 在席ハートビートの既定間隔（秒）。ゲートウェイの session_ttl（既定 90s）より十分短くする。
 # テストはこれを 0 にしてバックグラウンドスレッドを止められる（0/負で無効）。
@@ -60,17 +72,20 @@ class ServerNotRunningError(RuntimeError):
     """接続先（ゲートウェイ）が応答しなかった。"""
 
 
-def _post_session(base_url: str, path: str, payload: dict, timeout: float = 5.0):
+def _post_session(base_url: str, path: str, payload: dict, timeout: float = 5.0,
+                  api_key: str | None = None):
     """ゲートウェイのセッション管理エンドポイントへ POST する（best-effort）。
 
     ゲートウェイが未起動／未対応（旧版）でも例外を投げず None を返す（エージェント本体を
     止めない）。base_url は公開ポート（…/v1 等）でよい—ゲートウェイは末尾一致で
-    `/admin/sessions/*` を拾う。成功時は応答 JSON（dict）、失敗時は None。
+    `/admin/sessions/*` を拾う。api_key があれば Authorization を付ける（認証ありゲートウェイ
+    では必須）。成功時は応答 JSON（dict）、失敗時は None。
     """
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         f"{base_url}{path}", data=data,
-        headers={"Content-Type": "application/json"}, method="POST",
+        headers={"Content-Type": "application/json", **_auth_headers(api_key)},
+        method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -81,7 +96,8 @@ def _post_session(base_url: str, path: str, payload: dict, timeout: float = 5.0)
 
 
 def _heartbeat_loop(base_url: str, agent_id: str, model: str,
-                    stop: threading.Event, interval: float) -> None:
+                    stop: threading.Event, interval: float,
+                    api_key: str | None = None) -> None:
     """stop がセットされるまで、interval ごとに在席ハートビートを送る（デーモンスレッド）。
 
     自身（LLMClient）を参照しないので、クライアントが GC されればハートビートも止まる
@@ -89,36 +105,48 @@ def _heartbeat_loop(base_url: str, agent_id: str, model: str,
     回収済み、またはゲートウェイ復帰）ら登録し直す（best-effort の自己修復）。
     """
     while not stop.wait(interval):
-        if _post_session(base_url, "/admin/sessions/heartbeat", {"agent_id": agent_id}) is None:
+        if _post_session(base_url, "/admin/sessions/heartbeat", {"agent_id": agent_id},
+                         api_key=api_key) is None:
             _post_session(base_url, "/admin/sessions/register",
-                          {"agent_id": agent_id, "model": model})
+                          {"agent_id": agent_id, "model": model}, api_key=api_key)
 
 
 def _release_session(base_url: str, agent_id: str,
-                     stop: threading.Event, enabled: bool) -> None:
+                     stop: threading.Event, enabled: bool,
+                     api_key: str | None = None) -> None:
     """ハートビートを止め、利用終了を通知する（finalizer / close から一度だけ呼ばれる）。"""
     stop.set()
     if enabled:
-        _post_session(base_url, "/admin/sessions/release", {"agent_id": agent_id})
+        _post_session(base_url, "/admin/sessions/release", {"agent_id": agent_id},
+                      api_key=api_key)
 
 
-def is_ready(base_url: str = DEFAULT_BASE_URL, timeout: float = 1.0) -> bool:
-    """OpenAI 互換サーバー（ゲートウェイ）が応答可能かを判定する。"""
+def is_ready(base_url: str = DEFAULT_BASE_URL, timeout: float = 1.0,
+             api_key: str | None = None) -> bool:
+    """OpenAI 互換サーバー（ゲートウェイ）が応答可能かを判定する。
+
+    認証ありゲートウェイでは /v1/models もキーを要求するため、api_key があれば載せる
+    （無いと 401 になり False になってしまう）。
+    """
+    req = urllib.request.Request(f"{base_url}/models", headers=_auth_headers(api_key))
     try:
-        with urllib.request.urlopen(f"{base_url}/models", timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status == 200
     except (urllib.error.URLError, OSError):
         return False
 
 
-def list_models(base_url: str = DEFAULT_BASE_URL, timeout: float = 5.0) -> list[str]:
+def list_models(base_url: str = DEFAULT_BASE_URL, timeout: float = 5.0,
+                api_key: str | None = None) -> list[str]:
     """ゲートウェイが公開する全モデル id を /v1/models から返す（取得失敗時は []）。
 
     ゲートウェイはカタログとして複数モデルを並べる（先頭が必ずしもアクティブとは限らない）
     ので、モデルの提供有無は「リストに含まれるか」で判定する（→ check_model_served）。
+    認証ありゲートウェイでは api_key を載せる（無いと 401 で空リストになる）。
     """
+    req = urllib.request.Request(f"{base_url}/models", headers=_auth_headers(api_key))
     try:
-        with urllib.request.urlopen(f"{base_url}/models", timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
         return []
@@ -155,7 +183,8 @@ def parse_host_port(base_url: str, default_port: int = 8799) -> tuple[str, int]:
 
 
 def check_model_served(
-    base_url: str = DEFAULT_BASE_URL, model: str | None = None, *, timeout: float = 5.0
+    base_url: str = DEFAULT_BASE_URL, model: str | None = None, *, timeout: float = 5.0,
+    api_key: str | None = None,
 ) -> list[str]:
     """接続先が設定モデルを提供しているか確認し、警告メッセージ群を返す（取り違え防止）。
 
@@ -165,7 +194,7 @@ def check_model_served(
     """
     if not model:
         return []
-    models = list_models(base_url, timeout)
+    models = list_models(base_url, timeout, api_key=api_key)
     if not models or any(models_match(m, model) for m in models):
         return []
     if len(models) == 1:
@@ -351,7 +380,7 @@ class LLMClient:
         model: str = DEFAULT_MODEL,
         *,
         base_url: str = DEFAULT_BASE_URL,
-        api_key: str = "not-needed",
+        api_key: str = DEFAULT_API_KEY,
         temperature: float = 0.0,
         max_tokens: int | None = None,
         timeout: Any = None,
@@ -364,6 +393,9 @@ class LLMClient:
     ) -> None:
         self.model = model
         self.base_url = base_url
+        # 認証ありゲートウェイ用のキー。chat（openai SDK）だけでなく、raw HTTP の在席セッション
+        # にも同じキーを載せる。認証なしゲートウェイでは送られても無視される。
+        self.api_key = api_key
         self.temperature = float(temperature)
         self.max_tokens = max_tokens
         # ツール呼び出しの方式: native（API の function calling）/ prompt（仕様注入＋JSON解析）。
@@ -385,11 +417,12 @@ class LLMClient:
         # _release_session は self を参照しない（=GC を妨げない）よう値だけを渡す。
         self._finalizer = weakref.finalize(
             self, _release_session, self.base_url, self.agent_id,
-            self._hb_stop, self._session_enabled,
+            self._hb_stop, self._session_enabled, self.api_key,
         )
         if self._session_enabled:
             _post_session(self.base_url, "/admin/sessions/register",
-                          {"agent_id": self.agent_id, "model": self.model})
+                          {"agent_id": self.agent_id, "model": self.model},
+                          api_key=self.api_key)
             interval = (
                 SESSION_HEARTBEAT_INTERVAL if heartbeat_interval is None
                 else float(heartbeat_interval)
@@ -397,7 +430,8 @@ class LLMClient:
             if interval > 0:
                 threading.Thread(
                     target=_heartbeat_loop,
-                    args=(self.base_url, self.agent_id, self.model, self._hb_stop, interval),
+                    args=(self.base_url, self.agent_id, self.model, self._hb_stop,
+                          interval, self.api_key),
                     daemon=True,
                 ).start()
 
@@ -618,6 +652,7 @@ def connect(
     model: str = DEFAULT_MODEL,
     *,
     base_url: str = DEFAULT_BASE_URL,
+    api_key: str = DEFAULT_API_KEY,
     temperature: float = 0.0,
     max_tokens: int | None = None,
     timeout: Any = None,
@@ -635,7 +670,7 @@ def connect(
     同じだが、未起動なら早めに親切なエラーを出す。在席セッション（即時アンロード）は既定で
     有効—不要なら `session=False`。
     """
-    if not is_ready(base_url):
+    if not is_ready(base_url, api_key=api_key):
         raise ServerNotRunningError(
             f"No gateway responding at {base_url}. Start it first (the local-llm-server "
             "gateway / its app), then connect again."
@@ -643,6 +678,7 @@ def connect(
     return LLMClient(
         model,
         base_url=base_url,
+        api_key=api_key,
         temperature=temperature,
         max_tokens=max_tokens,
         timeout=timeout,
