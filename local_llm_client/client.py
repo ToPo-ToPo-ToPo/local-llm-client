@@ -436,11 +436,13 @@ class LLMClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": build_user_content(user_text, images)})
 
-        params: dict[str, Any] = dict(
-            model=self.model, messages=messages, temperature=self.temperature, **kwargs
-        )
+        # kwargs を先に展開し、既定は setdefault で補う。こうすると呼び出し側が temperature /
+        # max_tokens 等をこのターンだけ上書きでき（衝突での TypeError や既定の黙殺を防ぐ）、
+        # model / messages を渡した場合も衝突しない。
+        params: dict[str, Any] = {"model": self.model, "messages": messages, **kwargs}
+        params.setdefault("temperature", self.temperature)
         if self.max_tokens is not None:
-            params["max_tokens"] = self.max_tokens
+            params.setdefault("max_tokens", self.max_tokens)
 
         if stream:
             return self._stream(params)
