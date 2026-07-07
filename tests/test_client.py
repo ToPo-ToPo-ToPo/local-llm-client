@@ -367,4 +367,4 @@ def test_client_threads_api_key_to_openai_and_session(monkeypatch):
 def test_client_default_api_key(fake_openai):
     from local_llm_client.client import DEFAULT_API_KEY
     llm = LLMClient(model="m", base_url="http://gw/v1")
-    assert llm.api_key == DEFAULT_API_KEY  # 既定（環境変数 LOCAL_LLM_API_KEY か "not-needed"）
+    assert llm.api_key == DEFAULT_API_KEY  # 既定は "not-needed"（認証なしゲートウェイ向け）
