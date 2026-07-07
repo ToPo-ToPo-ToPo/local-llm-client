@@ -47,6 +47,17 @@ except ServerNotRunningError:
 高度な操作（embeddings / tool calling / 構造化出力 / async など）は、土台の openai クライアントに
 `llm.openai` で直接アクセスできる。素の `openai` SDK で `base_url` を指してもよい。
 
+### 別PC（ネットワーク越し）から繋ぐ
+
+ゲートウェイを `host = "0.0.0.0"` ＋ `api_key` で公開している場合は、`base_url` をそのPCのLAN IP、
+`api_key` をそのキーに合わせる（chat も在席セッションも自動でキーが載る）。詳細は
+[docs/connecting.md](docs/connecting.md#別pcネットワーク越しから繋ぐ)。
+
+```python
+llm = LLMClient(model="mlx-community/Qwen3.6-27B-4bit",
+                base_url="http://192.168.1.5:8799/v1", api_key="＜キー＞")
+```
+
 ## 在席セッション（使い終わったら即メモリ解放）
 
 `LLMClient` は既定で、ゲートウェイに「このモデルを使う」と登録し、定期ハートビートを送る。
