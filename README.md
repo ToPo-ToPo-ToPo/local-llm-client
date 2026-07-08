@@ -32,6 +32,21 @@ for piece in llm.respond("長い説明を", stream=True):
     print(piece, end="", flush=True)
 ```
 
+音声認識（STT）は `transcribe()`。ゲートウェイの whisper バックエンドへ音声を送る
+（エージェント側に mlx-whisper は不要。model に whisper 系 ID を指定するだけ）:
+
+```python
+stt = LLMClient(model="mlx-community/whisper-large-v3-turbo",
+                base_url="http://127.0.0.1:8799/v1")
+print(stt.transcribe("input.wav", language="ja"))        # → 文字起こし（文字列）
+print(stt.transcribe(audio_bytes, filename="clip.mp3"))  # バイトでも可
+print(stt.transcribe("speech.wav", translate=True))      # 英訳
+seg = stt.transcribe("input.wav", response_format="verbose_json")  # 区間・言語つき
+```
+
+> STT を使うにはゲートウェイ側に ffmpeg CLI が必要（→ local-llm-server の
+> [音声認識（STT / whisper）](https://github.com/ToPo-ToPo-ToPo/local-llm-server/blob/main/docs/gateway.md#音声認識stt--whisper)）。
+
 起動確認付きのワンライナー（未起動なら親切なエラー。サーバーは起動しない）:
 
 ```python

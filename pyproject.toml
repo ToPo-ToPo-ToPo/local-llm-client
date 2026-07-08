@@ -1,7 +1,7 @@
 [project]
 name = "local-llm-client"
-version = "0.4.0"
-description = "ローカル LLM ゲートウェイ（local-llm-server / OpenAI 互換）に繋ぐ高レベルクライアント。エージェント共通のクライアントで、openai のボイラープレートを再実装しない。"
+version = "0.5.0"
+description = "ローカル LLM ゲートウェイ（local-llm-server / OpenAI 互換）に繋ぐ高レベルクライアント。エージェント共通のクライアントで、openai のボイラープレートを再実装しない（chat・画像・音声認識/STT）。"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"

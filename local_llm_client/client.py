@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
+import os
 import re
 import threading
 import urllib.error
@@ -490,6 +491,70 @@ class LLMClient:
             delta = chunk.choices[0].delta.content
             if delta:
                 yield delta
+
+    # --- 音声認識（STT。ゲートウェイの whisper バックエンド経由）------------------
+    def transcribe(
+        self,
+        audio: str | os.PathLike | bytes | bytearray | Any,
+        *,
+        language: str | None = None,
+        prompt: str | None = None,
+        temperature: float | None = None,
+        response_format: str = "text",
+        translate: bool = False,
+        filename: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """音声を文字起こしする（`self.model` を STT モデルとしてゲートウェイに送る）。
+
+        `respond()` の音声版。エージェントが openai の音声ボイラープレート（ファイル整形・
+        multipart）を再実装しなくて済む。
+
+        引数:
+          audio           音声ファイルのパス（str/PathLike）、開いたバイナリファイルオブジェクト、
+                          または生バイト（bytes）。
+          language        入力言語のヒント（例 "ja"）。translate=True のときは無視される。
+          prompt          文脈/固有名詞のヒント（whisper の initial_prompt）。
+          temperature     デコード温度（省略時はサーバ既定）。
+          response_format "text"（既定）/ "json" / "verbose_json" / "srt" / "vtt"。
+          translate       True で英訳（/v1/audio/translations）。既定は文字起こし。
+          filename        audio が bytes のときにサーバへ渡すファイル名（拡張子で音声形式を判定
+                          させる。既定 "audio.wav"）。
+
+        戻り値: response_format="text"（既定）は文字列。それ以外は openai SDK の戻り値を
+        そのまま返す（"json"/"verbose_json" は `.text` を持つオブジェクト、"srt"/"vtt" は文字列）。
+        """
+        params: dict[str, Any] = {
+            "model": self.model,
+            "response_format": response_format,
+            **kwargs,
+        }
+        if prompt:
+            params["prompt"] = prompt
+        if temperature is not None:
+            params["temperature"] = temperature
+        # translations エンドポイントは language を受け付けない（常に英訳）。
+        if language and not translate:
+            params["language"] = language
+
+        endpoint = (
+            self.openai.audio.translations if translate
+            else self.openai.audio.transcriptions
+        )
+        opened = None
+        try:
+            if isinstance(audio, (str, os.PathLike)):
+                opened = open(audio, "rb")
+                file_arg: Any = opened
+            elif isinstance(audio, (bytes, bytearray)):
+                # openai SDK は (filename, bytes) タプルを受け付ける。拡張子でサーバが形式判定する。
+                file_arg = (filename or "audio.wav", bytes(audio))
+            else:
+                file_arg = audio  # 既に開いたファイルオブジェクト等
+            return endpoint.create(file=file_arg, **params)
+        finally:
+            if opened is not None:
+                opened.close()
 
     # --- エージェントループ向け: tool-calling 付き 1 ターン -----------------
     def chat(

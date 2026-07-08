@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from types import SimpleNamespace
 
 import pytest
 
@@ -87,10 +88,32 @@ class _FakeChat:
         self.completions = _FakeCompletions()
 
 
+class _FakeTranscriptions:
+    """audio.transcriptions / translations のフェイク。呼び出しを記録する。"""
+
+    def __init__(self, kind):
+        self.kind = kind
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        # response_format="text" は openai SDK では素の文字列を返す。
+        if kwargs.get("response_format") == "text":
+            return f"{self.kind}-text"
+        return SimpleNamespace(text=f"{self.kind}-obj")
+
+
+class _FakeAudio:
+    def __init__(self):
+        self.transcriptions = _FakeTranscriptions("transcribe")
+        self.translations = _FakeTranscriptions("translate")
+
+
 class _FakeOpenAI:
     def __init__(self, *a, **k):
         self.init_kwargs = k
         self.chat = _FakeChat()
+        self.audio = _FakeAudio()
 
 
 @pytest.fixture
@@ -146,6 +169,55 @@ def test_timeout_passed_to_openai(fake_openai):
     # timeout を渡したときだけ openai クライアントへ伝える（None なら既定に任せる）。
     assert "timeout" not in LLMClient(model="m").openai.init_kwargs
     assert LLMClient(model="m", timeout=42.0).openai.init_kwargs["timeout"] == 42.0
+
+
+# --- transcribe（STT） -----------------------------------------------------
+def test_transcribe_from_path_returns_text(fake_openai, tmp_path):
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"RIFFfake")
+    llm = LLMClient(model="mlx-community/whisper-large-v3-turbo")
+    out = llm.transcribe(str(wav), language="ja")
+    assert out == "transcribe-text"  # response_format 既定 "text" → 文字列
+    sent = llm.openai.audio.transcriptions.calls[0]
+    assert sent["model"] == "mlx-community/whisper-large-v3-turbo"
+    assert sent["language"] == "ja"
+    assert sent["response_format"] == "text"
+    # ファイルはバイナリで開いて渡す。
+    assert hasattr(sent["file"], "read")
+
+
+def test_transcribe_from_bytes_uses_filename_tuple(fake_openai):
+    llm = LLMClient(model="whisper")
+    llm.transcribe(b"\x00\x01audio", filename="clip.mp3")
+    sent = llm.openai.audio.transcriptions.calls[0]
+    assert sent["file"] == ("clip.mp3", b"\x00\x01audio")
+
+
+def test_transcribe_bytes_default_filename(fake_openai):
+    llm = LLMClient(model="whisper")
+    llm.transcribe(bytearray(b"xyz"))
+    assert llm.openai.audio.transcriptions.calls[0]["file"] == ("audio.wav", b"xyz")
+
+
+def test_transcribe_translate_uses_translations_and_drops_language(fake_openai):
+    llm = LLMClient(model="whisper")
+    out = llm.transcribe(b"snd", translate=True, language="ja", prompt="hint")
+    assert out == "translate-text"
+    # translations 側が呼ばれ、transcriptions は未使用。
+    assert len(llm.openai.audio.translations.calls) == 1
+    assert llm.openai.audio.transcriptions.calls == []
+    sent = llm.openai.audio.translations.calls[0]
+    assert "language" not in sent          # 英訳は language 非対応
+    assert sent["prompt"] == "hint"
+
+
+def test_transcribe_verbose_json_returns_object(fake_openai):
+    llm = LLMClient(model="whisper")
+    out = llm.transcribe(b"snd", response_format="verbose_json", temperature=0.2)
+    assert out.text == "transcribe-obj"     # 非 text は SDK 戻り値をそのまま返す
+    sent = llm.openai.audio.transcriptions.calls[0]
+    assert sent["response_format"] == "verbose_json"
+    assert sent["temperature"] == 0.2
 
 
 # --- connect（起動中ゲートウェイに繋ぐだけ。自動起動しない） ----------------
