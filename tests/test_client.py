@@ -165,10 +165,73 @@ def test_openai_client_accessible(fake_openai):
     assert llm.openai.init_kwargs["base_url"] == "http://127.0.0.1:8080/v1"
 
 
-def test_timeout_passed_to_openai(fake_openai):
-    # timeout を渡したときだけ openai クライアントへ伝える（None なら既定に任せる）。
-    assert "timeout" not in LLMClient(model="m").openai.init_kwargs
+def test_timeout_default_is_finite(fake_openai):
+    # timeout 未指定でも**有限の既定**（DEFAULT_TIMEOUT）を openai クライアントへ渡す
+    # （無指定でプロセスが無期限ブロックしないための自衛）。
+    import httpx
+    from local_llm_client.client import DEFAULT_TIMEOUT
+
+    passed = LLMClient(model="m").openai.init_kwargs["timeout"]
+    assert passed is DEFAULT_TIMEOUT
+    assert isinstance(passed, httpx.Timeout)
+    assert passed.read == 300.0 and passed.connect == 10.0  # 有限
+    # self.timeout にも保持する（エラーメッセージ用）。
+    assert LLMClient(model="m").timeout is DEFAULT_TIMEOUT
+
+
+def test_timeout_explicit_passed_to_openai(fake_openai):
+    # 明示 timeout はそのまま openai クライアントへ伝える。
     assert LLMClient(model="m", timeout=42.0).openai.init_kwargs["timeout"] == 42.0
+    assert LLMClient(model="m", timeout=42.0).timeout == 42.0
+
+
+# --- タイムアウト（無応答ハング）を明確なエラーに翻訳する --------------------
+def _timeout_raiser():
+    import httpx
+    from openai import APITimeoutError
+
+    def create(**kwargs):
+        raise APITimeoutError(request=httpx.Request("POST", "http://gw/v1/chat"))
+
+    return create
+
+
+def test_respond_timeout_raises_llm_timeout_error(fake_openai, monkeypatch):
+    from local_llm_client import LLMTimeoutError
+
+    llm = LLMClient(model="m")
+    monkeypatch.setattr(llm.openai.chat.completions, "create", _timeout_raiser())
+    with pytest.raises(LLMTimeoutError) as exc:
+        llm.respond("hi")
+    # 有限タイムアウトの記述が載る。画像なしなので MTP ヒントは付かない。
+    assert "did not respond within the client timeout" in str(exc.value)
+    assert "image input" not in str(exc.value)
+
+
+def test_respond_timeout_with_images_mentions_mtp(fake_openai, monkeypatch):
+    from local_llm_client import LLMTimeoutError
+
+    llm = LLMClient(model="m")
+    monkeypatch.setattr(llm.openai.chat.completions, "create", _timeout_raiser())
+    with pytest.raises(LLMTimeoutError) as exc:
+        llm.respond("これは？", images=["https://example.com/a.png"])
+    # 画像入りのハングは MTP×images の既知バグの可能性を示す。
+    assert "image input" in str(exc.value) and "MTP" in str(exc.value)
+
+
+def test_stream_timeout_raises_llm_timeout_error(fake_openai, monkeypatch):
+    from local_llm_client import LLMTimeoutError
+
+    llm = LLMClient(model="m")
+    monkeypatch.setattr(llm.openai.chat.completions, "create", _timeout_raiser())
+    with pytest.raises(LLMTimeoutError):
+        list(llm.respond("hi", stream=True))
+
+
+def test_llm_timeout_error_is_timeout_error():
+    # 従来 TimeoutError を捕捉していたコードでもそのまま拾える。
+    from local_llm_client import LLMTimeoutError
+    assert issubclass(LLMTimeoutError, TimeoutError)
 
 
 # --- transcribe（STT） -----------------------------------------------------

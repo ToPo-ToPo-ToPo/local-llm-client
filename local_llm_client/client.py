@@ -40,7 +40,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Iterator
 
-from openai import OpenAI
+import httpx  # openai の依存。timeout 既定を read（無応答）中心に組むために使う
+from openai import APITimeoutError, OpenAI
 
 TextSink = Callable[[str], None]
 
@@ -54,6 +55,29 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8799/v1"
 # 既定は "not-needed"（認証なしのローカルゲートウェイ向け）。認証ありのゲートウェイに繋ぐときは
 # LLMClient(..., api_key="＜キー＞") で実際のキーを渡す。認証なしなら送られても無視される。
 DEFAULT_API_KEY = "not-needed"
+
+# respond()/chat() の既定タイムアウト（timeout 未指定時に使う）。**有限**にすることが重要 ——
+# 無指定でも 1 回の呼び出しがプロセスを無期限にブロックしないための自衛。httpx は「総リクエスト
+# 時間」ではなく操作ごとの上限を持ち、ストリーミングでは read が「次のトークンが届くまでの最大
+# 待ち時間」＝無応答(stall)検知として働く。vision（画像入力）のプリフィルは数十秒かかり得るので
+# read は長め（既定 300s）にするが、無限ハングは必ずここで打ち切る。connect は短く（10s）して
+# 未起動サーバーには素早く失敗する。より長く/無制限にしたいときは LLMClient(..., timeout=...) で
+# 明示（例: httpx.Timeout(None) で無制限、数値で全操作一律、httpx.Timeout(read=..., connect=...)）。
+# 注意: openai SDK は timeout エラーを既定で再試行する（max_retries、既定 2）ため、実効の最悪
+# 待ち時間は read × 試行回数になり得る。
+DEFAULT_READ_TIMEOUT = 300.0
+DEFAULT_TIMEOUT = httpx.Timeout(DEFAULT_READ_TIMEOUT, connect=10.0)
+
+
+class LLMTimeoutError(TimeoutError):
+    """生成が client の timeout 内に応答しなかった（無応答/ハングの自衛用の明確なエラー）。
+
+    openai の `APITimeoutError`（httpx の read/connect タイムアウト）を、原因の当たりを付けた
+    メッセージに翻訳して投げ直す。特に画像入力（images）併用でのハングは、ゲートウェイ側の
+    依存 `mlx_vlm` の既知バグ（MTP 投機的デコーディング有効時に images でハング）が原因である
+    ことが多いため、その切り分けを助ける文言を添える。`TimeoutError` の subclass なので、
+    従来 `TimeoutError` を捕捉していたコードでもそのまま拾える。
+    """
 
 
 def _auth_headers(api_key: str | None) -> dict:
@@ -244,6 +268,22 @@ def build_user_content(
     return parts
 
 
+def _messages_have_images(messages: list[dict[str, Any]] | None) -> bool:
+    """メッセージ列に画像入力（image_url パート）が含まれるか。
+
+    タイムアウト時のエラーメッセージで「画像入力を含む＝MTP×images の既知ハングかも」の
+    ヒントを出すかどうかの判定に使う。build_user_content が作る OpenAI vision 形式
+    （content 配列の {"type": "image_url", ...}）を検出する。
+    """
+    for msg in messages or []:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and "image" in (part.get("type") or ""):
+                    return True
+    return False
+
+
 def thinking_extra_body(enable: bool) -> dict[str, Any]:
     """思考(thinking)モードの ON/OFF をサーバーへ渡す extra_body を作る。
 
@@ -364,6 +404,14 @@ class LLMClient:
     Iterator[str] を返す。マルチモーダルは images にローカルパス/URL を渡す。土台の
     openai クライアントは ``self.openai`` で直接使える（embeddings / tool calling など）。
 
+    **タイムアウト（既定は有限）**: ``timeout`` 未指定でも既定 ``DEFAULT_TIMEOUT``
+    （read=300s / connect=10s の有限値）を使うので、1 回の呼び出しがプロセスを無期限に
+    ブロックすることはない。read が「次のトークンが届くまでの上限」＝無応答検知として働き、
+    超えると ``LLMTimeoutError`` を投げる。**画像入力 × MTP（投機的デコーディング）は上流
+    ``mlx_vlm`` の既知バグでハングし得る**ため、画像を含むリクエストの timeout ではその旨の
+    ヒントをエラーに添える。より長く/無制限にしたいときは ``timeout=httpx.Timeout(None)`` 等を
+    明示する（openai SDK は timeout を既定で再試行するので実効の最悪待ち時間は read × 試行回数）。
+
     **在席セッション（既定 ON）**: 生成時にゲートウェイへ「このモデルを使う」と登録し、
     バックグラウンドで定期ハートビートを送る。クライアントを ``close()``（または ``with``
     ブロック終了 / GC / プロセス終了）で破棄すると利用終了を通知し、そのモデルを使う
@@ -403,11 +451,15 @@ class LLMClient:
         self.tool_mode = tool_mode
         self.enable_thinking = enable_thinking
         self.stream = stream
-        # timeout は float / httpx.Timeout / None。None のときは openai の既定に任せる
-        # （ローカルの巨大モデルは初回応答が遅いので、長め/無制限を渡せるようにする）。
-        client_kwargs: dict[str, Any] = {"base_url": base_url, "api_key": api_key}
-        if timeout is not None:
-            client_kwargs["timeout"] = timeout
+        # timeout は float / httpx.Timeout / None。None のときは**有限の既定**（DEFAULT_TIMEOUT）を
+        # 使う —— 無指定でも 1 回の呼び出しがプロセスを無期限にブロックしないための自衛。read が
+        # 無応答(stall)検知として働く（vision のプリフィルを見込んで長めだが必ず有限）。長く/無制限に
+        # したいときは明示（例 httpx.Timeout(None)）。
+        resolved_timeout = DEFAULT_TIMEOUT if timeout is None else timeout
+        self.timeout = resolved_timeout
+        client_kwargs: dict[str, Any] = {
+            "base_url": base_url, "api_key": api_key, "timeout": resolved_timeout,
+        }
         self.openai = OpenAI(**client_kwargs)
 
         # --- 在席セッション（即時アンロード用） ---
@@ -456,6 +508,34 @@ class LLMClient:
     def __exit__(self, *_exc) -> None:
         self.close()
 
+    # --- タイムアウトの明確化（無応答ハングの自衛） --------------------------
+    def _timeout_desc(self) -> str:
+        """設定タイムアウトの人間可読な要約（エラーメッセージ用）。"""
+        t = self.timeout
+        if isinstance(t, httpx.Timeout):
+            read = t.read
+            return f"read={read:g}s" if read is not None else "no read limit"
+        return f"{t}s"
+
+    def _timeout_error(self, messages: list[dict[str, Any]] | None) -> LLMTimeoutError:
+        """APITimeoutError を、原因の当たりを付けた LLMTimeoutError に翻訳する。"""
+        msg = (
+            f"the model did not respond within the client timeout "
+            f"({self._timeout_desc()})."
+        )
+        if _messages_have_images(messages):
+            msg += (
+                " This request includes image input; if the target model has MTP "
+                "(speculative decoding) enabled, image inputs are a known mlx-vlm hang "
+                "(newer local-llm-server gateways reject that combination with HTTP 400). "
+                "Send images to a model without MTP, or disable MTP for that model."
+            )
+        msg += (
+            " Increase timeout= if the model is simply slow to prefill, or check the "
+            "gateway / model server."
+        )
+        return LLMTimeoutError(msg)
+
     def respond(
         self,
         user_text: str,
@@ -481,16 +561,25 @@ class LLMClient:
 
         if stream:
             return self._stream(params)
-        resp = self.openai.chat.completions.create(**params)
+        try:
+            resp = self.openai.chat.completions.create(**params)
+        except APITimeoutError as exc:
+            raise self._timeout_error(params.get("messages")) from exc
         return resp.choices[0].message.content or ""
 
     def _stream(self, params: dict[str, Any]) -> Iterator[str]:
-        for chunk in self.openai.chat.completions.create(stream=True, **params):
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        # タイムアウト（無応答）はストリーム生成中に起きる。read タイムアウトが「次のトークンが
+        # 来るまでの上限」として働き、超えると APITimeoutError → 明確な LLMTimeoutError に翻訳する。
+        try:
+            stream = self.openai.chat.completions.create(stream=True, **params)
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+        except APITimeoutError as exc:
+            raise self._timeout_error(params.get("messages")) from exc
 
     # --- 音声認識（STT。ゲートウェイの whisper バックエンド経由）------------------
     def transcribe(
@@ -604,6 +693,18 @@ class LLMClient:
         extra: dict[str, Any],
     ) -> SimpleNamespace:
         """ストリーミングで応答を取得する（本文断片を on_text へ、tool_calls を蓄積）。"""
+        try:
+            return self._chat_stream_inner(messages, tools, on_text, extra)
+        except APITimeoutError as exc:
+            raise self._timeout_error(messages) from exc
+
+    def _chat_stream_inner(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        on_text: TextSink,
+        extra: dict[str, Any],
+    ) -> SimpleNamespace:
         stream = self.openai.chat.completions.create(
             model=self.model,
             messages=messages,
@@ -674,15 +775,18 @@ class LLMClient:
         extra: dict[str, Any],
     ) -> SimpleNamespace:
         """非ストリーミングで 1 回応答を取得する。"""
-        response = self.openai.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=tools or None,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            stream=False,
-            **extra,
-        )
+        try:
+            response = self.openai.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=tools or None,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=False,
+                **extra,
+            )
+        except APITimeoutError as exc:
+            raise self._timeout_error(messages) from exc
         message = response.choices[0].message
         content = (message.content or "").strip() or None
         if content:

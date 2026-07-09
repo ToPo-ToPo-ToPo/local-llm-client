@@ -62,6 +62,41 @@ except ServerNotRunningError:
 高度な操作（embeddings / tool calling / 構造化出力 / async など）は、土台の openai クライアントに
 `llm.openai` で直接アクセスできる。素の `openai` SDK で `base_url` を指してもよい。
 
+## タイムアウトと無応答（ハング）対策
+
+`timeout` を指定しなくても、`LLMClient` は**有限の既定タイムアウト**（`DEFAULT_TIMEOUT` =
+read 300 秒 / connect 10 秒）を使う。無指定でも 1 回の呼び出しがプロセスを**無期限にブロック
+しない**ようにするため。read タイムアウトは「次のトークンが届くまでの最大待ち時間」＝無応答
+（stall）検知として働き、超えると `LLMTimeoutError` を投げる。
+
+```python
+from local_llm_client import LLMClient, LLMTimeoutError
+
+llm = LLMClient(model="...", base_url="http://127.0.0.1:8799/v1")
+try:
+    print(llm.respond("これは何？", images=["photo.jpg"]))
+except LLMTimeoutError as e:
+    print("無応答:", e)   # 原因の当たり（画像入り時は MTP×images の既知バグ）を添えたメッセージ
+```
+
+- **長く/無制限にしたいとき**は明示する（vision のプリフィルが長いモデル等）:
+  ```python
+  import httpx
+  LLMClient(..., timeout=httpx.Timeout(600.0, connect=10.0))  # read 10 分
+  LLMClient(..., timeout=httpx.Timeout(None))                 # 無制限（自己責任）
+  LLMClient(..., timeout=240)                                 # 数値なら全操作一律
+  ```
+- openai SDK は timeout エラーを既定で再試行する（`max_retries`、既定 2）ため、実効の最悪
+  待ち時間は read × 試行回数になり得る。
+
+> **注意: 画像入力（`images=`）× MTP（投機的デコーディング）は要注意。**
+> MTP を有効にしたモデルへ画像を送ると、ゲートウェイが依存する `mlx_vlm` の既知バグで
+> **エラーにならずハングする**ことがある。新しめの `local-llm-server` ゲートウェイはこの
+> 組み合わせを HTTP 400 で即拒否するが、古いゲートウェイでは `LLMTimeoutError`（上記の
+> 有限タイムアウト）で打ち切られる。画像を扱うなら MTP 無しのモデルを使うか、そのモデルの
+> `draft_model = "off"` で MTP を切る（→ local-llm-server の
+> [MTP ドキュメント](https://github.com/ToPo-ToPo-ToPo/local-llm-server/blob/main/docs/mtp.md)）。
+
 ### 別PC（ネットワーク越し）から繋ぐ
 
 ゲートウェイを `host = "0.0.0.0"` ＋ `api_key` で公開している場合は、`base_url` をそのPCのLAN IP、
