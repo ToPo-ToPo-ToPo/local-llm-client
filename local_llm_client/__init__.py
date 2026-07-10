@@ -31,6 +31,7 @@ from .client import (
     parse_prompt_tool_calls,
     thinking_extra_body,
     to_image_url,
+    to_video_url,
     transform_messages_for_prompt,
 )
 
@@ -41,6 +42,7 @@ __all__ = [
     "LLMTimeoutError",
     "is_ready",
     "to_image_url",
+    "to_video_url",
     "build_user_content",
     "thinking_extra_body",
     "DEFAULT_MODEL",

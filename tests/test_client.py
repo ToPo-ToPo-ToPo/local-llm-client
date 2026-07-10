@@ -14,6 +14,7 @@ from local_llm_client.client import (
     connect,
     thinking_extra_body,
     to_image_url,
+    to_video_url,
 )
 
 
@@ -39,6 +40,34 @@ def test_to_image_url_local_file_becomes_data_uri(tmp_path):
 def test_to_image_url_missing_file_raises():
     with pytest.raises(FileNotFoundError):
         to_image_url("/no/such/file.png")
+
+
+def test_build_user_content_with_video():
+    # 動画は video_url パーツで送る（ゲートウェイがフレーム展開する）。
+    content = build_user_content("この動画は？", videos=["https://example.com/v.mp4"])
+    assert content[0] == {"type": "text", "text": "この動画は？"}
+    assert content[1] == {"type": "video_url",
+                          "video_url": {"url": "https://example.com/v.mp4"}}
+
+
+def test_build_user_content_images_and_videos_together():
+    content = build_user_content("見て", images=["http://x/a.png"],
+                                 videos=["http://x/v.mp4"])
+    types = [p["type"] for p in content]
+    assert types == ["text", "image_url", "video_url"]
+
+
+def test_to_video_url_local_file_becomes_data_uri(tmp_path):
+    p = tmp_path / "clip.mp4"
+    p.write_bytes(b"\x00\x00\x00\x18ftypmp4")
+    url = to_video_url(str(p))
+    assert url.startswith("data:video/mp4;base64,")
+    assert base64.b64decode(url.split(",", 1)[1]) == b"\x00\x00\x00\x18ftypmp4"
+
+
+def test_to_video_url_missing_file_raises():
+    with pytest.raises(FileNotFoundError):
+        to_video_url("/no/such/clip.mp4")
 
 
 # --- respond（openai クライアントをフェイクに差し替え） --------------------
@@ -152,6 +181,14 @@ def test_respond_passes_images(fake_openai):
     llm.respond("見て", images=["https://example.com/a.png"])
     content = llm.openai.chat.completions.calls[0]["messages"][-1]["content"]
     assert isinstance(content, list) and content[1]["type"] == "image_url"
+
+
+def test_respond_passes_videos(fake_openai):
+    llm = LLMClient(model="m")
+    llm.respond("この動画は？", videos=["https://example.com/v.mp4"])
+    content = llm.openai.chat.completions.calls[0]["messages"][-1]["content"]
+    assert isinstance(content, list) and content[1]["type"] == "video_url"
+    assert content[1]["video_url"]["url"] == "https://example.com/v.mp4"
 
 
 def test_max_tokens_forwarded(fake_openai):

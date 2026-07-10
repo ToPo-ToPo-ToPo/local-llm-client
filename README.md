@@ -30,6 +30,9 @@ print(llm.respond("ローカル LLM の利点を3つ。"))
 print(llm.respond("これは何？", images=["photo.jpg"]))
 for piece in llm.respond("長い説明を", stream=True):
     print(piece, end="", flush=True)
+
+# 動画入力（ゲートウェイが ffmpeg でフレーム抽出して画像として渡す。llama-cpp / mlx-vlm 共通）
+print(llm.respond("この動画で何が起きている？", videos=["clip.mp4"]))
 ```
 
 音声認識（STT）は `transcribe()`。ゲートウェイの whisper バックエンドへ音声を送る

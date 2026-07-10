@@ -253,18 +253,37 @@ def to_image_url(ref: str) -> str:
     return f"data:{mime};base64,{data}"
 
 
-def build_user_content(
-    text: str, images: list[str] | None = None
-) -> str | list[dict[str, Any]]:
-    """テキスト（＋画像）を OpenAI 互換の user メッセージ content に組み立てる。
+def to_video_url(ref: str) -> str:
+    """動画参照（ローカルパス or URL）を data URI / URL 文字列に変換する。
 
-    画像が無ければ素の文字列、あれば text パート＋image_url パートの配列を返す。
+    URL / データURI はそのまま、ローカルファイルは base64 のデータURIにする。ゲートウェイが
+    受け取って ffmpeg でフレーム抽出し、画像として上流モデルへ渡す（→ local-llm-server の動画入力）。
     """
-    if not images:
+    if _is_url(ref):
+        return ref
+    path = Path(ref)
+    if not path.exists():
+        raise FileNotFoundError(f"Video not found: {ref}")
+    mime = mimetypes.guess_type(path.name)[0] or "video/mp4"
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{data}"
+
+
+def build_user_content(
+    text: str, images: list[str] | None = None, videos: list[str] | None = None
+) -> str | list[dict[str, Any]]:
+    """テキスト（＋画像＋動画）を OpenAI 互換の user メッセージ content に組み立てる。
+
+    画像も動画も無ければ素の文字列、あれば text パート＋image_url / video_url パートの配列を返す。
+    動画（video_url）はゲートウェイ側でフレーム画像列に展開される（バックエンド非依存）。
+    """
+    if not images and not videos:
         return text
     parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
-    for ref in images:
+    for ref in images or []:
         parts.append({"type": "image_url", "image_url": {"url": to_image_url(ref)}})
+    for ref in videos or []:
+        parts.append({"type": "video_url", "video_url": {"url": to_video_url(ref)}})
     return parts
 
 
@@ -542,14 +561,21 @@ class LLMClient:
         *,
         system_prompt: str | None = None,
         images: list[str] | None = None,
+        videos: list[str] | None = None,
         stream: bool = False,
         **kwargs: Any,
     ) -> str | Iterator[str]:
-        """1 ターン生成する。stream=True なら断片の Iterator[str] を返す。"""
+        """1 ターン生成する。stream=True なら断片の Iterator[str] を返す。
+
+        videos を渡すと video_url パーツとして送り、ゲートウェイが ffmpeg でフレーム抽出して
+        画像入力に展開する（llama-cpp / mlx-vlm 共通。→ local-llm-server の動画入力）。
+        """
         messages: list[dict[str, Any]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": build_user_content(user_text, images)})
+        messages.append(
+            {"role": "user",
+             "content": build_user_content(user_text, images, videos)})
 
         # kwargs を先に展開し、既定は setdefault で補う。こうすると呼び出し側が temperature /
         # max_tokens 等をこのターンだけ上書きでき（衝突での TypeError や既定の黙殺を防ぐ）、
