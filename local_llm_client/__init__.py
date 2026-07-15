@@ -34,6 +34,7 @@ from .client import (
     to_video_url,
     transform_messages_for_prompt,
 )
+from .reasoning_filter import ReasoningStreamFilter, strip_reasoning
 
 __all__ = [
     "LLMClient",
@@ -58,4 +59,7 @@ __all__ = [
     "build_tool_spec",
     "transform_messages_for_prompt",
     "parse_prompt_tool_calls",
+    # 思考チャネル除去（バックエンドが分離し損ねた <think> / Harmony を content から剥がす）
+    "strip_reasoning",
+    "ReasoningStreamFilter",
 ]

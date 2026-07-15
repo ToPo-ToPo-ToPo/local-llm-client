@@ -43,6 +43,8 @@ from typing import Any, Callable, Iterator
 import httpx  # openai の依存。timeout 既定を read（無応答）中心に組むために使う
 from openai import APITimeoutError, OpenAI
 
+from .reasoning_filter import ReasoningStreamFilter, strip_reasoning
+
 TextSink = Callable[[str], None]
 
 
@@ -591,11 +593,14 @@ class LLMClient:
             resp = self.openai.chat.completions.create(**params)
         except APITimeoutError as exc:
             raise self._timeout_error(params.get("messages")) from exc
-        return resp.choices[0].message.content or ""
+        # 思考チャネルが content に混ざっていれば剥がす（chat() と同じ扱い）。
+        return strip_reasoning(resp.choices[0].message.content)
 
     def _stream(self, params: dict[str, Any]) -> Iterator[str]:
         # タイムアウト（無応答）はストリーム生成中に起きる。read タイムアウトが「次のトークンが
         # 来るまでの上限」として働き、超えると APITimeoutError → 明確な LLMTimeoutError に翻訳する。
+        # 思考チャネルはチャンク境界で割れても扱えるフィルタで剥がしてから yield する。
+        rf = ReasoningStreamFilter()
         try:
             stream = self.openai.chat.completions.create(stream=True, **params)
             for chunk in stream:
@@ -603,7 +608,12 @@ class LLMClient:
                     continue
                 delta = chunk.choices[0].delta.content
                 if delta:
-                    yield delta
+                    cleaned = rf.feed(delta)
+                    if cleaned:
+                        yield cleaned
+            tail = rf.flush()
+            if tail:
+                yield tail
         except APITimeoutError as exc:
             raise self._timeout_error(params.get("messages")) from exc
 
@@ -745,6 +755,9 @@ class LLMClient:
         emitted = False
         started = False  # 本文の先頭の空白を捨てる
         pending_ws = ""  # 末尾の空白を保留し、後続テキストが来たときだけ出す
+        # 思考チャネル（<think> / Harmony <|channel|>analysis…）がバックエンドで分離
+        # されず content に混ざったときに剥がす。マーカーがチャンク境界で割れても扱える。
+        rf = ReasoningStreamFilter()
 
         def feed_content(piece: str) -> None:
             nonlocal started, pending_ws, emitted
@@ -766,7 +779,9 @@ class LLMClient:
                 continue
             delta = chunk.choices[0].delta
             if delta.content:
-                feed_content(delta.content)
+                cleaned = rf.feed(delta.content)
+                if cleaned:
+                    feed_content(cleaned)
             for tc in delta.tool_calls or []:
                 entry = partial_calls.setdefault(
                     tc.index, {"id": "", "name": "", "arguments": ""}
@@ -777,6 +792,10 @@ class LLMClient:
                     entry["name"] += tc.function.name
                 if tc.function and tc.function.arguments:
                     entry["arguments"] += tc.function.arguments
+        # 保留していたマーカー断片・ドロップ中でない残りを掃き出す。
+        tail = rf.flush()
+        if tail:
+            feed_content(tail)
         if emitted:
             on_text("\n")
 
@@ -814,7 +833,8 @@ class LLMClient:
         except APITimeoutError as exc:
             raise self._timeout_error(messages) from exc
         message = response.choices[0].message
-        content = (message.content or "").strip() or None
+        # 思考チャネルが content に混ざっていれば剥がす（ストリームと同じ扱い）。
+        content = strip_reasoning(message.content).strip() or None
         if content:
             on_text(content)
             on_text("\n")
@@ -838,7 +858,7 @@ class LLMClient:
                 model=self.model, messages=messages, temperature=0.3, max_tokens=64,
                 stream=False, extra_body=thinking_extra_body(False),
             )
-            content = resp.choices[0].message.content or ""
+            content = strip_reasoning(resp.choices[0].message.content)
         except Exception:  # noqa: BLE001 - 補助機能。失敗時は呼び出し側がフォールバック
             return ""
         lines = content.strip().splitlines()
