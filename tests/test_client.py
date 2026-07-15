@@ -196,6 +196,53 @@ def test_max_tokens_forwarded(fake_openai):
     assert LLMClient(model="m", max_tokens=128).max_tokens == 128
 
 
+# --- 思考チャネル除去（バックエンドが content に混ぜてきたものを剥がす） ----------
+
+def _chat_chunk(content):
+    """chat() 経路用のストリームチャンク（tool_calls を持つ delta）。"""
+    delta = SimpleNamespace(content=content, tool_calls=None)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+
+def test_respond_non_stream_strips_reasoning(fake_openai):
+    llm = LLMClient(model="m")
+    leaked = "<|channel|>analysis<|message|>考える<|end|>答えです"
+    llm.openai.chat.completions.create = lambda **k: _FakeResp(leaked)
+    assert llm.respond("hi") == "答えです"
+
+
+def test_respond_stream_strips_reasoning(fake_openai):
+    llm = LLMClient(model="m")
+    pieces = ["<|chan", "nel|>analysis<|mess", "age|>内部思考", "<|end|>本当の答え"]
+    llm.openai.chat.completions.create = lambda **k: iter(
+        [_FakeStreamChunk(p) for p in pieces]
+    )
+    assert "".join(llm.respond("hi", stream=True)) == "本当の答え"
+
+
+def test_chat_stream_strips_reasoning_content_and_on_text(fake_openai):
+    llm = LLMClient(model="m")   # 既定 stream=True → _chat_stream 経路
+    pieces = ["<think>ひみつの", "推論</think>", "できたよ"]
+    llm.openai.chat.completions.create = lambda **k: iter(
+        [_chat_chunk(p) for p in pieces]
+    )
+    shown = []
+    m = llm.chat([{"role": "user", "content": "x"}], [], shown.append)
+    assert m.content == "できたよ"                  # 戻り値がクリーン
+    assert "".join(shown).strip() == "できたよ"      # ストリーム表示もクリーン
+
+
+def test_chat_clean_text_and_toolcalls_untouched(fake_openai):
+    # 制御トークンの無い正常応答は一切変えない（過剰除去なし）。
+    llm = LLMClient(model="m")
+    llm.openai.chat.completions.create = lambda **k: iter(
+        [_chat_chunk("if x < y: pass")]
+    )
+    shown = []
+    m = llm.chat([{"role": "user", "content": "x"}], [], shown.append)
+    assert m.content == "if x < y: pass"
+
+
 def test_openai_client_accessible(fake_openai):
     # 土台の openai クライアントに直接アクセスできる（高度操作用）。
     llm = LLMClient(model="m", base_url="http://127.0.0.1:8080/v1")
