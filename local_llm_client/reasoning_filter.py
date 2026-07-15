@@ -58,6 +58,16 @@ _CHANNEL_END = re.compile(
 # まだ閉じていない短い断片なら次のチャンクまで保留する。
 _PARTIAL_TAIL = re.compile(r"<\|?/?[a-zA-Z|]{0,12}$")
 
+# 応答の先頭に「開始マーカーを伴わない裸のチャネルラベル」が残る崩れへの保険。
+# 上流(mlx-vlm 等)が開始 ``<|channel>`` だけを食い、ラベル本体と終了マーカーを
+# content に残すことがある（例: ``thought\n…本文…\n<channel|>本回答``）。この場合
+# ラベル＋本文が素通りする。先頭がドロップ対象ラベルで**始まり**、かつ後段に
+# チャネル終端マーカーが既に見えているときだけ、その終端までを思考として捨てる
+# （終端が確認できる時のみ発火＝素の散文「Thought about…」を食わない）。
+_LEAD_LABEL = re.compile(
+    r"^[ \t]*(?:analysis|commentary|thought|reasoning)\b", re.IGNORECASE
+)
+
 
 class ReasoningStreamFilter:
     """細切れチャンクから思考チャネルを剥がすステートフルなフィルタ。
@@ -70,6 +80,7 @@ class ReasoningStreamFilter:
     def __init__(self) -> None:
         self._buf = ""
         self._drop: str | None = None  # None / "think" / "channel": 本文ドロップ中の種別
+        self._started = False  # クリーンな非空テキストを一度でも出したか（先頭ラベル判定用）
 
     # ------------------------------------------------------------------
     def feed(self, chunk: str) -> str:
@@ -91,6 +102,14 @@ class ReasoningStreamFilter:
         return "".join(out)
 
     # ------------------------------------------------------------------
+    def _push(self, out: list[str], s: str) -> None:
+        """クリーンテキストを出力し、非空なら「先頭は過ぎた」と記録する。"""
+        if not s:
+            return
+        out.append(s)
+        if s.strip():
+            self._started = True
+
     def _consume(self, out: list[str], *, hold_partial: bool) -> None:
         while True:
             if self._drop == "think":
@@ -112,6 +131,19 @@ class ReasoningStreamFilter:
                 self._drop = None
                 continue
 
+            # 先頭の「裸のチャネルラベル」崩れ対策（開始マーカーが上流で食われた場合）。
+            # まだ何も出していない＝応答の真の先頭のときだけ、かつ終端マーカーが既に
+            # 見えているときだけ、ラベル〜終端を思考として捨てる（散文の誤食を防ぐ）。
+            if not self._started:
+                lead = _LEAD_LABEL.match(self._buf)
+                if lead:
+                    endm = _CHANNEL_END.search(self._buf, lead.end())
+                    if endm:
+                        self._buf = self._buf[endm.end():]
+                        continue
+                    # 終端未着: 通常処理に委ねる（散文を食わない）。最終テキストは
+                    # 全文が1回で渡る strip_reasoning 側で終端ごと落ちる。
+
             # NORMAL: 次に現れる制御構造を探す。
             think = _THINK_OPEN.search(self._buf)
             chan = _CHANNEL_HDR.search(self._buf)
@@ -122,7 +154,7 @@ class ReasoningStreamFilter:
             if not cands:
                 # 制御なし。末尾のマーカー断片だけ保留して残りを出す。
                 cut = _partial_start(self._buf) if hold_partial else len(self._buf)
-                out.append(self._buf[:cut])
+                self._push(out, self._buf[:cut])
                 self._buf = self._buf[cut:]
                 return
             m = min(cands, key=lambda x: x.start())
@@ -130,10 +162,10 @@ class ReasoningStreamFilter:
             # 可能性がある（チャネルラベルがチャンク境界で分断）。次のチャンクまで保留し、
             # 部分ラベルを誤って確定しない（"analysis" が "ana" で切れる事故を防ぐ）。
             if hold_partial and m.end() == len(self._buf):
-                out.append(self._buf[:m.start()])
+                self._push(out, self._buf[:m.start()])
                 self._buf = self._buf[m.start():]
                 return
-            out.append(self._buf[:m.start()])
+            self._push(out, self._buf[:m.start()])
 
             if m is think:
                 self._buf = self._buf[m.end():]

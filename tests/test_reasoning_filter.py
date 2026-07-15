@@ -129,3 +129,35 @@ def test_empty_and_none():
     assert strip_reasoning("") == ""
     assert strip_reasoning(None) == ""
     assert stream([]) == ""
+
+
+# ----------------------------------------------------------------------
+# 先頭の「裸のチャネルラベル」崩れ（上流が開始 <|channel> だけを食った場合）
+# ----------------------------------------------------------------------
+
+def test_orphan_leading_label_with_close_is_dropped():
+    # gemma-4 で実際に観測: 開始マーカーが消え、ラベル＋本文＋終了 <channel|> が残る。
+    raw = "thought\nいろいろ考える\n<channel|>ペンギン、できました。"
+    assert strip_reasoning(raw) == "ペンギン、できました。"
+
+
+def test_orphan_leading_label_minimal():
+    assert strip_reasoning("thought\n<channel|>できました。") == "できました。"
+
+
+def test_orphan_leading_label_without_close_kept_as_prose():
+    # 終端マーカーが無ければ思考と断定できない → 素のテキストとして残す（誤食しない）。
+    assert strip_reasoning("thought\nそのまま本文だけ。") == "thought\nそのまま本文だけ。"
+
+
+def test_leading_label_word_in_real_prose_is_not_eaten():
+    # 素の英語で "Thought"/"Analysis" 始まりの文は絶対に食わない。
+    assert strip_reasoning("Thought about it. Here is the plan.") \
+        == "Thought about it. Here is the plan."
+    assert strip_reasoning("Analysis complete — all good.") \
+        == "Analysis complete — all good."
+
+
+def test_stream_orphan_leading_label_close_in_same_chunk():
+    # 終端が同じチャンクで見えていれば、ストリーミングでもラベル〜終端を落とす。
+    assert stream(["thought\n本文\n<channel|>回答"]) == "回答"
