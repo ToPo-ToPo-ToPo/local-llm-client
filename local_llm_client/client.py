@@ -43,6 +43,7 @@ from typing import Any, Callable, Iterator
 import httpx  # openai の依存。timeout 既定を read（無応答）中心に組むために使う
 from openai import APITimeoutError, OpenAI
 
+from .tool_call_stream import ToolCallStreamFilter
 from .reasoning_filter import ReasoningStreamFilter, strip_reasoning
 
 TextSink = Callable[[str], None]
@@ -687,8 +688,14 @@ class LLMClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         on_text: TextSink = _noop_text,
+        on_tool_args: "Callable[[str, bool], None] | None" = None,
     ) -> SimpleNamespace:
         """1 ターン分の応答を受信し、`.content` / `.tool_calls`（/ `.parse_error`）を返す。
+
+        on_tool_args(raw_text, done): ツール呼び出しの**生成中テキスト**の途中経過
+        (ゲートウェイの stream_tool_calls が有効なときだけ届く)。raw_text は
+        `<tool_call>` 以降に生成された生テキストの累積、done は区間が閉じた合図。
+        本文(on_text)にはこの区間は流れない。途中解析は tool_call_stream.parse_partial_tool_call。
 
         本文は on_text に**生テキスト断片**として流す（表示整形・スピナー等の提示は呼び出し側
         ＝フロントエンドの責務。本クライアントは提示を持たない）。
@@ -718,7 +725,7 @@ class LLMClient:
                 content=result.content, tool_calls=calls or None, parse_error=parse_error
             )
         if self.stream:
-            return self._chat_stream(messages, tools, on_text, extra)
+            return self._chat_stream(messages, tools, on_text, extra, on_tool_args)
         return self._chat_once(messages, tools, on_text, extra)
 
     def _chat_stream(
@@ -727,10 +734,11 @@ class LLMClient:
         tools: list[dict[str, Any]],
         on_text: TextSink,
         extra: dict[str, Any],
+        on_tool_args: "Callable[[str, bool], None] | None" = None,
     ) -> SimpleNamespace:
         """ストリーミングで応答を取得する（本文断片を on_text へ、tool_calls を蓄積）。"""
         try:
-            return self._chat_stream_inner(messages, tools, on_text, extra)
+            return self._chat_stream_inner(messages, tools, on_text, extra, on_tool_args)
         except APITimeoutError as exc:
             raise self._timeout_error(messages) from exc
 
@@ -740,6 +748,7 @@ class LLMClient:
         tools: list[dict[str, Any]],
         on_text: TextSink,
         extra: dict[str, Any],
+        on_tool_args: "Callable[[str, bool], None] | None" = None,
     ) -> SimpleNamespace:
         stream = self.openai.chat.completions.create(
             model=self.model,
@@ -758,6 +767,13 @@ class LLMClient:
         # 思考チャネル（<think> / Harmony <|channel|>analysis…）がバックエンドで分離
         # されず content に混ざったときに剥がす。マーカーがチャンク境界で割れても扱える。
         rf = ReasoningStreamFilter()
+        # ツール呼び出しの生テキスト（ゲートウェイの stream_tool_calls 有効時に content へ流れる）
+        # を本文から剥がし、途中経過を on_tool_args へ渡す。マーカーが来なければ完全な素通し。
+        tf = ToolCallStreamFilter()
+
+        def _tool_progress() -> None:
+            if on_tool_args is not None and tf.changed:
+                on_tool_args(tf.raw, tf.closed)
 
         def feed_content(piece: str) -> None:
             nonlocal started, pending_ws, emitted
@@ -781,7 +797,10 @@ class LLMClient:
             if delta.content:
                 cleaned = rf.feed(delta.content)
                 if cleaned:
-                    feed_content(cleaned)
+                    visible = tf.feed(cleaned)
+                    _tool_progress()
+                    if visible:
+                        feed_content(visible)
             for tc in delta.tool_calls or []:
                 entry = partial_calls.setdefault(
                     tc.index, {"id": "", "name": "", "arguments": ""}
@@ -795,7 +814,14 @@ class LLMClient:
         # 保留していたマーカー断片・ドロップ中でない残りを掃き出す。
         tail = rf.flush()
         if tail:
-            feed_content(tail)
+            visible = tf.feed(tail)
+            _tool_progress()
+            if visible:
+                feed_content(visible)
+        tail2 = tf.flush()
+        _tool_progress()
+        if tail2:
+            feed_content(tail2)
         if emitted:
             on_text("\n")
 
