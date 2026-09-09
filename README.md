@@ -142,3 +142,24 @@ with LLMClient(model="mlx-community/Qwen3.6-27B-4bit",
 ## ライセンス
 
 Apache-2.0
+
+## ツール呼び出しの生成中テキストを受け取る（`on_tool_args`、0.8.0）
+
+ゲートウェイ（local-llm-server 0.38.13+）で `stream_tool_calls = true` にすると、モデルが
+ツール呼び出しを**生成している最中**の生テキスト（Qwen なら `<tool_call><function=…>` の形）が
+ストリームの content として届く。`chat()` はこれを本文（`on_text`）から剥がし、途中経過を
+`on_tool_args(raw_text, done)` に渡す。最終的なツール呼び出し（`.tool_calls`）は従来どおり
+最後の解析済みチャンクから作る。
+
+```python
+from local_llm_client.tool_call_stream import parse_partial_tool_call
+
+def on_tool_args(raw, done):
+    p = parse_partial_tool_call(raw)   # {"name", "arguments", "partial", "arguments_text"}
+    if p["name"] == "write_file" and p["partial"] and p["partial"][0] == "content":
+        editor.show(p["arguments"].get("path"), p["partial"][1])   # 書きかけの本文を表示
+
+msg = llm.chat(messages, tools, on_text=print, on_tool_args=on_tool_args)
+```
+
+ゲートウェイの設定が off のとき（既定）はマーカーが来ないので、挙動は従来と同じ。
