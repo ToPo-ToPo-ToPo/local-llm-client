@@ -145,9 +145,12 @@ Apache-2.0
 
 ## ツール呼び出しの生成中テキストを受け取る（`on_tool_args`、0.8.0）
 
-ゲートウェイ（local-llm-server 0.38.13+）で `stream_tool_calls = true` にすると、モデルが
+`LLMClient(stream_tool_calls=True)`（0.9.0）でゲートウェイに頼むと、モデルが
 ツール呼び出しを**生成している最中**の生テキスト（Qwen なら `<tool_call><function=…>` の形）が
-ストリームの content として届く。`chat()` はこれを本文（`on_text`）から剥がし、途中経過を
+ストリームの content として届く。頼んだクライアントのリクエストにだけヘッダー
+`X-Stream-Tool-Calls: 1` が付き、ゲートウェイ（local-llm-server 0.38.19+）がそのリクエストだけ流すので、
+同じモデルを共有するほかのクライアントには影響しない（ゲートウェイ側でモデルの既定
+`stream_tool_calls = true` にしても届く。その場合は全クライアントに流れる）。`chat()` はこれを本文（`on_text`）から剥がし、途中経過を
 `on_tool_args(raw_text, done)` に渡す。最終的なツール呼び出し（`.tool_calls`）は従来どおり
 最後の解析済みチャンクから作る。
 
@@ -159,7 +162,8 @@ def on_tool_args(raw, done):
     if p["name"] == "write_file" and p["partial"] and p["partial"][0] == "content":
         editor.show(p["arguments"].get("path"), p["partial"][1])   # 書きかけの本文を表示
 
+llm = LLMClient(model="…", stream_tool_calls=True)
 msg = llm.chat(messages, tools, on_text=print, on_tool_args=on_tool_args)
 ```
 
-ゲートウェイの設定が off のとき（既定）はマーカーが来ないので、挙動は従来と同じ。
+頼まないとき（既定）はマーカーが来ないので、挙動は従来と同じ。

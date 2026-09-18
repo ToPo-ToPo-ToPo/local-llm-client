@@ -269,6 +269,41 @@ def test_timeout_explicit_passed_to_openai(fake_openai):
     assert LLMClient(model="m", timeout=42.0).timeout == 42.0
 
 
+def test_stream_tool_calls_adds_the_request_header(fake_openai):
+    """stream_tool_calls=True のクライアントだけ、ゲートウェイへ「ツール呼び出しの生成中テキストを
+    流して」と頼むヘッダーを全リクエストに付ける。既定は付けない（ほかのクライアントに影響しない）。"""
+    from local_llm_client.client import STREAM_TOOL_CALLS_HEADER
+
+    on = LLMClient(model="m", stream_tool_calls=True)
+    assert on.stream_tool_calls is True
+    assert on.openai.init_kwargs["default_headers"] == {STREAM_TOOL_CALLS_HEADER: "1"}
+    off = LLMClient(model="m")
+    assert off.stream_tool_calls is False
+    assert "default_headers" not in off.openai.init_kwargs
+
+
+def test_stream_tool_calls_header_reaches_the_wire():
+    """本物の openai クライアントで、ヘッダーが実際の HTTP リクエストに乗ることを確かめる。"""
+    import httpx
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("x-stream-tool-calls"))
+        return httpx.Response(200, json={
+            "id": "x", "object": "chat.completion", "created": 0, "model": "m",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "ok"}}]})
+
+    from openai import OpenAI as RealOpenAI
+    c = LLMClient(model="m", stream_tool_calls=True, session=False, stream=False)
+    c.openai = RealOpenAI(base_url="http://gw/v1", api_key="x",
+                          default_headers=c.openai.default_headers,
+                          http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert c.respond("hi") == "ok"
+    assert seen == ["1"]
+
+
 # --- タイムアウト（無応答ハング）を明確なエラーに翻訳する --------------------
 def _timeout_raiser():
     import httpx
