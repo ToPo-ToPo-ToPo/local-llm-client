@@ -58,6 +58,8 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8799/v1"
 # 既定は "not-needed"（認証なしのローカルゲートウェイ向け）。認証ありのゲートウェイに繋ぐときは
 # LLMClient(..., api_key="＜キー＞") で実際のキーを渡す。認証なしなら送られても無視される。
 DEFAULT_API_KEY = "not-needed"
+#: ツール呼び出しの生成中テキストを流してもらうリクエストごとの指定（ゲートウェイ 0.38.19+ が中継する）。
+STREAM_TOOL_CALLS_HEADER = "X-Stream-Tool-Calls"
 
 # respond()/chat() の既定タイムアウト（timeout 未指定時に使う）。**有限**にすることが重要 ——
 # 無指定でも 1 回の呼び出しがプロセスを無期限にブロックしないための自衛。httpx は「総リクエスト
@@ -461,6 +463,7 @@ class LLMClient:
         session: bool = True,
         agent_id: str | None = None,
         heartbeat_interval: float | None = None,
+        stream_tool_calls: bool = False,
     ) -> None:
         self.model = model
         self.base_url = base_url
@@ -482,6 +485,12 @@ class LLMClient:
         client_kwargs: dict[str, Any] = {
             "base_url": base_url, "api_key": api_key, "timeout": resolved_timeout,
         }
+        # ツール呼び出しの生成中テキストを流してもらう（ゲートウェイ local-llm-server 0.38.19+ の
+        # リクエストごとの指定。on_tool_args で途中経過を受ける）。頼んだクライアントだけに流れるので、
+        # 同じモデルを共有するほかのクライアントには影響しない。
+        self.stream_tool_calls = bool(stream_tool_calls)
+        if self.stream_tool_calls:
+            client_kwargs["default_headers"] = {STREAM_TOOL_CALLS_HEADER: "1"}
         self.openai = OpenAI(**client_kwargs)
 
         # --- 在席セッション（即時アンロード用） ---
@@ -693,7 +702,8 @@ class LLMClient:
         """1 ターン分の応答を受信し、`.content` / `.tool_calls`（/ `.parse_error`）を返す。
 
         on_tool_args(raw_text, done): ツール呼び出しの**生成中テキスト**の途中経過
-        (ゲートウェイの stream_tool_calls が有効なときだけ届く)。raw_text は
+        (``LLMClient(stream_tool_calls=True)`` で頼んだとき、またはゲートウェイのモデルの既定
+        stream_tool_calls が有効なときだけ届く)。raw_text は
         `<tool_call>` 以降に生成された生テキストの累積、done は区間が閉じた合図。
         本文(on_text)にはこの区間は流れない。途中解析は tool_call_stream.parse_partial_tool_call。
 
@@ -767,7 +777,7 @@ class LLMClient:
         # 思考チャネル（<think> / Harmony <|channel|>analysis…）がバックエンドで分離
         # されず content に混ざったときに剥がす。マーカーがチャンク境界で割れても扱える。
         rf = ReasoningStreamFilter()
-        # ツール呼び出しの生テキスト（ゲートウェイの stream_tool_calls 有効時に content へ流れる）
+        # ツール呼び出しの生テキスト（stream_tool_calls を頼んだとき content へ流れる）
         # を本文から剥がし、途中経過を on_tool_args へ渡す。マーカーが来なければ完全な素通し。
         tf = ToolCallStreamFilter()
 
