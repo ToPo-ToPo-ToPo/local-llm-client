@@ -194,7 +194,7 @@ wheels = [
 
 [[package]]
 name = "local-llm-client"
-version = "0.10.0"
+version = "0.10.1"
 source = { editable = "." }
 dependencies = [
     { name = "openai" },
@@ -206,7 +206,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "openai", specifier = ">=1.0" }]
+requires-dist = [{ name = "openai", specifier = ">=1.55.3,<4" }]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0" }]
