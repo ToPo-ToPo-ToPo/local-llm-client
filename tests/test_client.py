@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import base64
+import gc
+import importlib
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +18,23 @@ from local_llm_client.client import (
     to_image_url,
     to_video_url,
 )
+
+
+def _openai_http():
+    """openai が土台にしている HTTP 層（2.x まで httpx、3.x から httpx2）のモジュール。
+
+    テストが httpx を決め打ちで import すると、openai 3.x の環境（httpx が入らない）で落ちる。
+    """
+    import openai
+
+    for name in ("httpx2", "httpx"):
+        try:
+            mod = importlib.import_module(name)
+        except ImportError:
+            continue
+        if mod.Timeout is openai.Timeout:
+            return mod
+    raise RuntimeError("openai の HTTP 層が見つからない")
 
 
 # --- マルチモーダル content 構築 -------------------------------------------
@@ -154,7 +173,11 @@ def fake_openai(monkeypatch):
     monkeypatch.setattr(client_mod, "_post_session",
                         lambda base, path, payload, **k: calls.append((path, payload)) or {})
     monkeypatch.setattr(client_mod, "SESSION_HEARTBEAT_INTERVAL", 0.0)
-    return calls
+    yield calls
+    # 在席セッションの LLMClient が monkeypatch の戻ったあとで GC されると、finalizer が本物の
+    # release を送り、後続のテストで PytestUnraisableExceptionWarning になる。差し替えが効いて
+    # いるうちに回収しておく。
+    gc.collect()
 
 
 def test_respond_non_stream_returns_text(fake_openai):
@@ -252,12 +275,12 @@ def test_openai_client_accessible(fake_openai):
 def test_timeout_default_is_finite(fake_openai):
     # timeout 未指定でも**有限の既定**（DEFAULT_TIMEOUT）を openai クライアントへ渡す
     # （無指定でプロセスが無期限ブロックしないための自衛）。
-    import httpx
+    import openai
     from local_llm_client.client import DEFAULT_TIMEOUT
 
     passed = LLMClient(model="m").openai.init_kwargs["timeout"]
     assert passed is DEFAULT_TIMEOUT
-    assert isinstance(passed, httpx.Timeout)
+    assert isinstance(passed, openai.Timeout)
     assert passed.read == 300.0 and passed.connect == 10.0  # 有限
     # self.timeout にも保持する（エラーメッセージ用）。
     assert LLMClient(model="m").timeout is DEFAULT_TIMEOUT
@@ -284,7 +307,7 @@ def test_stream_tool_calls_adds_the_request_header(fake_openai):
 
 def test_stream_tool_calls_header_reaches_the_wire():
     """本物の openai クライアントで、ヘッダーが実際の HTTP リクエストに乗ることを確かめる。"""
-    import httpx
+    httpx = _openai_http()
 
     seen = []
 
@@ -306,8 +329,9 @@ def test_stream_tool_calls_header_reaches_the_wire():
 
 # --- タイムアウト（無応答ハング）を明確なエラーに翻訳する --------------------
 def _timeout_raiser():
-    import httpx
     from openai import APITimeoutError
+
+    httpx = _openai_http()
 
     def create(**kwargs):
         raise APITimeoutError(request=httpx.Request("POST", "http://gw/v1/chat"))

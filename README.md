@@ -5,7 +5,8 @@
 - サーバー（ゲートウェイ）は別パッケージ。これは**接続する側**（エージェント共通のクライアント）。
 - 各エージェントが openai のボイラープレート（メッセージ整形・画像入力・thinking 切替・ストリーム）を
   再実装しなくて済む。
-- 依存は公式 `openai` SDK のみ。
+- 依存は公式 `openai` SDK のみ（`openai>=1.55.3,<4`。3.x で HTTP 層が httpx → httpx2 に替わったが、
+  どちらでも動く。版の範囲は `scripts/check-fresh-venv.sh` で空の venv に入れて確かめている）。
 
 ## インストール
 
@@ -84,11 +85,17 @@ except LLMTimeoutError as e:
 
 - **長く/無制限にしたいとき**は明示する（vision のプリフィルが長いモデル等）:
   ```python
-  import httpx
-  LLMClient(..., timeout=httpx.Timeout(600.0, connect=10.0))  # read 10 分
-  LLMClient(..., timeout=httpx.Timeout(None))                 # 無制限（自己責任）
-  LLMClient(..., timeout=240)                                 # 数値なら全操作一律
+  import openai
+  LLMClient(..., timeout=openai.Timeout(600.0, connect=10.0))  # read 10 分
+  LLMClient(..., timeout=openai.Timeout(None))                 # 無制限（自己責任）
+  LLMClient(..., timeout=240)                                  # 数値なら全操作一律
   ```
+  `openai.Timeout` は openai の HTTP 層（2.x までは httpx、3.x からは httpx2）の Timeout そのもの
+  なので、どちらの版でもそのまま通る。`httpx` を直接 import すると openai 3.x の環境では入って
+  いないことがあるので避ける。
+- 生成の無応答として `LLMTimeoutError` に翻訳する例外の型は `local_llm_client.TIMEOUT_ERRORS`
+  （openai の `APITimeoutError` と、ストリーム中に版によっては生で飛んでくる HTTP 層の
+  `TimeoutException`）。`llm.openai` を直接使って自前でタイムアウトを捕まえるときに使える。
 - openai SDK は timeout エラーを既定で再試行する（`max_retries`、既定 2）ため、実効の最悪
   待ち時間は read × 試行回数になり得る。
 
