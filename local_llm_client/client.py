@@ -308,6 +308,22 @@ def _messages_have_images(messages: list[dict[str, Any]] | None) -> bool:
     return False
 
 
+def reasoning_of(delta: Any) -> str | None:
+    """応答（delta / message）から思考の本文を取り出す。無ければ None。
+
+    推論バックエンド（mlx-vlm 等）は思考を本文（content）と分けて ``reasoning_content``
+    （実装によっては ``reasoning``）で返す。openai の型には無い項目なので、属性か
+    ``model_extra`` から読む。両方あるときは同じ中身なので ``reasoning_content`` を優先する。
+    """
+    for key in ("reasoning_content", "reasoning"):
+        value = getattr(delta, key, None)
+        if value is None:
+            value = (getattr(delta, "model_extra", None) or {}).get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def thinking_extra_body(enable: bool) -> dict[str, Any]:
     """思考(thinking)モードの ON/OFF をサーバーへ渡す extra_body を作る。
 
@@ -698,8 +714,13 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         on_text: TextSink = _noop_text,
         on_tool_args: "Callable[[str, bool], None] | None" = None,
+        on_reasoning: "Callable[[str], None] | None" = None,
     ) -> SimpleNamespace:
         """1 ターン分の応答を受信し、`.content` / `.tool_calls`（/ `.parse_error`）を返す。
+
+        on_reasoning(text): 思考（thinking）の本文の断片。``enable_thinking=True`` で思考が
+        有効なモデルが、本文と分けて返したとき（``reasoning_content``）だけ届く。本文（on_text）
+        には流れない。表示するかどうかは呼び出し側が決める（渡さなければ従来どおり捨てる）。
 
         on_tool_args(raw_text, done): ツール呼び出しの**生成中テキスト**の途中経過
         (``LLMClient(stream_tool_calls=True)`` で頼んだとき、またはゲートウェイのモデルの既定
@@ -720,9 +741,9 @@ class LLMClient:
             spec = build_tool_spec(tools)
             converted = transform_messages_for_prompt(messages, spec)
             if self.stream:
-                result = self._chat_stream(converted, [], on_text, extra)
+                result = self._chat_stream(converted, [], on_text, extra, on_reasoning=on_reasoning)
             else:
-                result = self._chat_once(converted, [], on_text, extra)
+                result = self._chat_once(converted, [], on_text, extra, on_reasoning)
             calls = parse_prompt_tool_calls(result.content)
             parse_error = None
             if not calls and result.content and _TOOL_FENCE.search(result.content):
@@ -735,8 +756,8 @@ class LLMClient:
                 content=result.content, tool_calls=calls or None, parse_error=parse_error
             )
         if self.stream:
-            return self._chat_stream(messages, tools, on_text, extra, on_tool_args)
-        return self._chat_once(messages, tools, on_text, extra)
+            return self._chat_stream(messages, tools, on_text, extra, on_tool_args, on_reasoning)
+        return self._chat_once(messages, tools, on_text, extra, on_reasoning)
 
     def _chat_stream(
         self,
@@ -745,10 +766,12 @@ class LLMClient:
         on_text: TextSink,
         extra: dict[str, Any],
         on_tool_args: "Callable[[str, bool], None] | None" = None,
+        on_reasoning: "Callable[[str], None] | None" = None,
     ) -> SimpleNamespace:
         """ストリーミングで応答を取得する（本文断片を on_text へ、tool_calls を蓄積）。"""
         try:
-            return self._chat_stream_inner(messages, tools, on_text, extra, on_tool_args)
+            return self._chat_stream_inner(messages, tools, on_text, extra, on_tool_args,
+                                           on_reasoning)
         except APITimeoutError as exc:
             raise self._timeout_error(messages) from exc
 
@@ -759,6 +782,7 @@ class LLMClient:
         on_text: TextSink,
         extra: dict[str, Any],
         on_tool_args: "Callable[[str, bool], None] | None" = None,
+        on_reasoning: "Callable[[str], None] | None" = None,
     ) -> SimpleNamespace:
         stream = self.openai.chat.completions.create(
             model=self.model,
@@ -804,6 +828,10 @@ class LLMClient:
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
+            if on_reasoning is not None:
+                thought = reasoning_of(delta)
+                if thought:
+                    on_reasoning(thought)
             if delta.content:
                 cleaned = rf.feed(delta.content)
                 if cleaned:
@@ -854,6 +882,7 @@ class LLMClient:
         tools: list[dict[str, Any]],
         on_text: TextSink,
         extra: dict[str, Any],
+        on_reasoning: "Callable[[str], None] | None" = None,
     ) -> SimpleNamespace:
         """非ストリーミングで 1 回応答を取得する。"""
         try:
@@ -869,6 +898,10 @@ class LLMClient:
         except APITimeoutError as exc:
             raise self._timeout_error(messages) from exc
         message = response.choices[0].message
+        if on_reasoning is not None:
+            thought = reasoning_of(message)
+            if thought:
+                on_reasoning(thought)
         # 思考チャネルが content に混ざっていれば剥がす（ストリームと同じ扱い）。
         content = strip_reasoning(message.content).strip() or None
         if content:

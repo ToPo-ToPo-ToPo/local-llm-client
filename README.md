@@ -167,3 +167,17 @@ msg = llm.chat(messages, tools, on_text=print, on_tool_args=on_tool_args)
 ```
 
 頼まないとき（既定）はマーカーが来ないので、挙動は従来と同じ。
+
+## 思考（thinking）の本文を受け取る（`on_reasoning`、0.10.0）
+
+`LLMClient(enable_thinking=True)` で思考が有効なモデルは、推論バックエンド（mlx-vlm 等）が思考を本文と
+分けて `reasoning_content`（実装によっては `reasoning`）で返す。`chat()` に `on_reasoning` を渡すと、その
+断片を受け取れる。本文（`on_text`）には流れない。渡さなければ従来どおり捨てる。
+
+```python
+llm = LLMClient(model="…", enable_thinking=True)
+msg = llm.chat(messages, tools, on_text=print, on_reasoning=lambda t: thinking_panel.append(t))
+```
+
+思考がバックエンドで分離されずに本文へ混ざってきた場合（`<think>…</think>` など）は、これまでどおり
+本文から剥がして捨てる（`on_reasoning` には渡さない）。

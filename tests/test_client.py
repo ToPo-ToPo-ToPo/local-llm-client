@@ -622,3 +622,66 @@ def test_client_default_api_key(fake_openai):
     from local_llm_client.client import DEFAULT_API_KEY
     llm = LLMClient(model="m", base_url="http://gw/v1")
     assert llm.api_key == DEFAULT_API_KEY  # 既定は "not-needed"（認証なしゲートウェイ向け）
+
+
+# --- 思考（thinking）の本文を on_reasoning へ（本文には混ぜない） --------------------
+
+def _thinking_chat(monkeypatch, deltas, *, stream=True, message=None):
+    import local_llm_client.client as c
+
+    class FakeChat:
+        def create(self, **kw):
+            if kw.get("stream"):
+                return (_StreamChoice(d) for d in deltas)
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    class FakeOpenAI:
+        def __init__(self, *a, **k):
+            self.chat = type("X", (), {"completions": FakeChat()})()
+
+    monkeypatch.setattr(c, "OpenAI", FakeOpenAI)
+    return c.LLMClient(model="m", stream=stream)
+
+
+def test_chat_stream_passes_reasoning_to_on_reasoning(monkeypatch):
+    """ゲートウェイが本文と分けて返す思考（reasoning_content）は on_reasoning へ。本文には混ぜない。"""
+    def think(text):
+        d = _Delta()
+        d.reasoning_content = text
+        d.reasoning = text              # 両方来ても二重に渡さない
+        return d
+
+    llm = _thinking_chat(monkeypatch, [think("17×23 を"), think("計算する。"), _Delta(content="391")])
+    text, thought = [], []
+    res = llm.chat([{"role": "user", "content": "17×23"}], on_text=text.append, on_reasoning=thought.append)
+    assert thought == ["17×23 を", "計算する。"]
+    assert res.content == "391" and "計算" not in "".join(text)
+
+
+def test_chat_stream_reads_reasoning_from_model_extra(monkeypatch):
+    """openai の型に無い項目は model_extra に入る。そこからも読む（reasoning だけの実装も）。"""
+    d = _Delta()
+    d.model_extra = {"reasoning": "考え中"}
+    llm = _thinking_chat(monkeypatch, [d, _Delta(content="答え")])
+    thought = []
+    llm.chat([{"role": "user", "content": "q"}], on_reasoning=thought.append)
+    assert thought == ["考え中"]
+
+
+def test_chat_without_on_reasoning_drops_thinking(monkeypatch):
+    """on_reasoning を渡さなければ従来どおり思考は捨てる（本文にも出ない）。"""
+    d = _Delta()
+    d.reasoning_content = "内緒の思考"
+    llm = _thinking_chat(monkeypatch, [d, _Delta(content="答え")])
+    text = []
+    res = llm.chat([{"role": "user", "content": "q"}], on_text=text.append)
+    assert res.content == "答え" and "内緒" not in "".join(text)
+
+
+def test_chat_once_passes_reasoning(monkeypatch):
+    """ストリーミングしない経路でも、message の思考を on_reasoning へ渡す。"""
+    msg = SimpleNamespace(content="答え", tool_calls=None, reasoning_content="まとめて考えた")
+    llm = _thinking_chat(monkeypatch, [], stream=False, message=msg)
+    thought = []
+    res = llm.chat([{"role": "user", "content": "q"}], on_reasoning=thought.append)
+    assert thought == ["まとめて考えた"] and res.content == "答え"
