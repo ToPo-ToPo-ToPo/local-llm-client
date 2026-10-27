@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["local-llm-client>=0.1"]
-# ///
 """ゲートウェイ経由で生成し、速度（tok/s）を測るサンプル（接続専用）。
 
 MTP（投機的デコード）は gateway.toml の `draft_model` で設定する（クライアントからは透過）。

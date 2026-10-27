@@ -100,3 +100,121 @@ curl -s http://127.0.0.1:8799/v1/chat/completions \
     "messages": [{"role": "user", "content": "俳句を一つ詠んでください。"}]
   }' | python3 -c "import sys, json; print(json.load(sys.stdin)['choices'][0]['message']['content'])"
 ```
+
+## TLS と実行環境（eMudhra 対応）
+
+2026-10-27 に、このリポジトリの実環境を調査・更新した。実行結果は macOS / Apple Silicon 上のもの。
+ライブラリの API、OpenAI SDK の対応範囲 `>=1.55.3,<4`、ロックの OpenAI 2.44.0 は維持した。
+
+変更ファイルは `pyproject.toml`、`uv.lock`（要件・ロック）、
+`.vscode/settings.json`、`.gitignore`（環境選択・退避環境とログの管理）、
+`scripts/check-fresh-venv.sh`、`scripts/check-tls.py`（検証とログ収集）、
+`examples/connect_and_generate.py`、`examples/generate_with_mtp.py`（起動経路）、
+`README.md`、本書（手順・結果）の計 10 件。
+
+### 最小要件と開発環境
+
+| 対象 | 必要な最小版 | 開発環境の使用・実測版 |
+| --- | --- | --- |
+| CPython 3.11 | 3.11.18 | 互換性検証に 3.11.18 を使用 |
+| CPython 3.12 | 3.12.16 | 実行未確認、修正範囲は公式情報で確認 |
+| CPython 3.13 | 3.13.18 | `uv venv --python 3.13.18` で作成した `.venv` |
+| CPython 3.14 | 3.14.10 | 実行未確認、修正範囲は公式情報で確認 |
+| CPython 3.15 | 3.15.2 | 実行未確認、修正範囲は公式情報で確認 |
+| certifi | 2026.10.19 | `uv.lock`・`.venv` とも 2026.10.19 |
+| uv | 鍵拒否は 0.13.5、上記 Python のカタログは 0.13.6 | 通常の Homebrew 版 uv 0.13.6 |
+| pip（使用する場合） | 26.2.2 | `.venv` には入れず uv を使用。新 Python の ensurepip は 26.2.2、内蔵 certifi は 2026.10.19 |
+
+`Requires-Python` は各系列の未修正パッチ版を除外する。古いパッチ版の利用者は同系列の
+修正版へ更新する必要がある。開発環境の Python の版指定は、公開パッケージの対応範囲とは別に管理する。
+Python 3.13.10 から 3.13.18 への更新で系列は変更していない。uv 0.11 系は影響範囲に含まれるため
+0.13 系へ変更した。ロックされた依存パッケージの版変更は certifi のみ。
+新 Python の OpenSSL は 3.5.9。`.zshrc`、pyenv の既定、OS の CA は変更していない。
+従来の手順を維持するため、通常の `uv python install 3.13.18`、`uv venv --python 3.13.18`、
+`uv sync --locked` で構築し、`uv run` で実行する。Python とキャッシュは uv 標準の場所を使う。
+手順を戻す時点で Homebrew の uv は既に 0.13.6 だったため、追加の Homebrew 更新は行っていない。
+当初作成した `scripts/uv` は削除した。`.python-version` は pyenv とも共有されるため追加しない。
+例の独立スクリプト用依存宣言も削除し、開発環境のロックを経由して実行するよう案内した。
+
+### 通信経路
+
+| 経路 | TLS の実体と証明書ストア | 対応 |
+| --- | --- | --- |
+| 起動確認、モデル一覧、在席セッション | `urllib.request` → CPython ssl/OpenSSL。macOS の `/private/etc/ssl/cert.pem` | Python の侵害鍵拒否を含む版へ更新 |
+| OpenAI 1・2 系列の生成・ストリーム・音声送信 | httpx → httpcore → CPython ssl/OpenSSL。既定 CA は certifi | certifi の直接最小要件とロックを更新 |
+| OpenAI 3 系列の同操作 | httpx2 → httpcore2 → truststore。既定は OS の証明書検証 | 別環境で実通信を検証。macOS の失効拒否を確認 |
+| uv のパッケージ・Python 取得 | Rust の独自 TLS と内蔵 CA | uv 本体を更新。Python/certifi の更新で直るとは扱わない |
+| URL 指定の画像・動画の取得 | このクライアントは URL を渡すだけ。取得するゲートウェイは別リポジトリ | ゲートウェイ側の HTTPS は未確認 |
+
+独自 HTTP クライアントへの差し替え、追加 SDK extras、独自 CA、環境変数で選択される別 CA は
+今回の検証対象外。OS の失効対策が Python 標準 TLS へ自動的に反映されるとは限らない。
+調査開始時のシェルは pyenv Python 3.13.9 / pip 25.3、Homebrew uv 0.11.2 だった。
+現在は通常の Homebrew uv 0.13.6 と、このリポジトリの `.venv` を使う。
+
+### 検証方法と結果
+
+`scripts/check-tls.py` は各実装で `https://julialang.org/` の HTTP 200 を先に確認する。
+続いて公表元の 12 チェーン（DV/OV/EV × G3B/G3C × emSign/AAA）と No CT の 2 件を検査する。
+認証情報を送らず、リダイレクトを追わず、TLS 検証を有効にする。公表元のスクリプトは実行しない。
+接続した場合は chains.zip にあるリーフと中間証明書の SHA-256 指紋を照合する。
+DNS・タイムアウト・正常対照失敗は未確認とし、期限切れ・ホスト名不一致・CT 要件による拒否を
+侵害 CA の拒否とは区別する。終了コードに加えて例外の原因・証明書エラーコードを JSON に記録する。
+
+| 環境 | 既存テスト | urllib の 14 件 | SDK 既定 HTTP 層の 14 件 |
+| --- | --- | --- | --- |
+| 更新前 Python 3.13.10 / OpenAI 2.44.0 / certifi 2026.6.17 | 97 成功 | 14 件受け入れ | emSign 7 件受け入れ、AAA 7 件拒否 |
+| 更新後 Python 3.13.18 / OpenAI 2.44.0 / certifi 2026.10.19 | 97 成功 | 14 件拒否 | 14 件拒否（httpx 0.28.1 / httpcore 1.0.9） |
+| Python 3.11.18 / OpenAI 1.55.3 / certifi 2026.10.19 | 97 成功 | 14 件拒否 | 14 件拒否（httpx 0.28.1） |
+| Python 3.11.18 / OpenAI 2.54.0 / certifi 2026.10.19 | 97 成功 | 14 件拒否 | 14 件拒否（httpx 0.28.1） |
+| Python 3.11.18 / OpenAI 3.0.0 / certifi 2026.10.19 | 97 成功 | 14 件拒否 | 14 件拒否（httpx2 / httpcore2 2.16.0、truststore 0.10.5） |
+| Python 3.11.18 / OpenAI 3.39.0 / certifi 2026.10.19 | 97 成功 | 14 件拒否 | 14 件拒否（httpx2 / httpcore2 2.16.0、truststore 0.10.5） |
+
+すべての更新後検査で正常対照は成功。既定環境と各空環境で依存整合性を確認した。
+更新前の受け入れ 21 接続は、公表されたリーフ・中間証明書の指紋と一致した。
+更新後の拒否理由は OpenSSL の `certificate rejected`（28）、
+`unable to get local issuer certificate`（20）、macOS の失効エラー（-67820）。
+macOS のコードは公式 SDK の Security.framework `SecBase.h` で
+`errSecCertificateRevoked` と確認した。期限切れや CT のみでの拒否には分類していない。
+
+通常起動 `uv run python` が `.venv/bin/python` / Python 3.13.18 を使うことを確認した。
+ベース Python は uv 標準の `~/.local/share/uv/python/` 配下で、`.tools/python/` には依存しない。
+旧 `.venv` は `.venv-pre-emudhra-20261027/` に保持。復元用の退避なので、直接起動せず元のパスに
+戻して使用する（旧スクリプトの絶対パスは元の `.venv` のまま）。
+検証用に新規作成した一時環境だけは、既存の確認スクリプトの終了時に削除される。
+当初作った専用ツール方式の `.venv` も `.venv-pre-emudhra-project-tools-20261027/` に保持した。
+`.tools/` に残る以前の実行ファイルは使用しない。uv が当初作ったバージョン付き `python3.13` リンクは
+uv 標準の保存先へ合わせた。汎用 `python` / `python3` の既定選択は変更していない。
+
+### 未確認・制約
+
+- CI・Docker 設定はリポジトリ内に存在せず、実行していない。
+- uv 独自 TLS は更新版による PyPI・Python 配布元への通常接続を確認したが、
+  リダイレクト禁止を指定できる検査手段を用意していないため、14 件の直接拒否は未確認。
+- VS Code 1.143.0 のユーザー既定は `/usr/bin/python3`（3.9.6）だった。
+  ワークスペース設定を `.venv` に追加したが、IDE 内で既に選択済みの実体は未確認。
+- 実ゲートウェイの起動確認とモデル一覧取得（5 件）は成功した。
+  README の既定モデルは未登録だが、取得済みの `ToPo-ToPo/Qwen3.8-27B-mlx-4bit` を指定し、
+  通常応答「1 + 1」→「2」、ストリーミング「日本の首都」→「東京」を実モデルで確認した。
+  所要時間は初回ロード込み 26.246 秒、後続ストリーミング 0.269 秒。サーバーログでも両要求の HTTP 200 を確認。
+  Python 3.13.18 / OpenAI 2.44.0、通常の `uv run python` から実行した。追加ダウンロード・設定変更は行っていない。
+  音声・画像・動画・ツール呼び出し等は既存テストで確認し、実モデルでの検証は未実施。
+- Python 3.12 / 3.14 / 3.15 の実行、CPython 以外の実装、Windows/Linux は未確認。
+  修正版の範囲は公式リリース情報に基づく。
+
+詳細ログはこの作業環境の `.tools/validation/emudhra-20261027/` に保存（Git 管理外）。
+主要ファイルは `baseline-environment.json`、`baseline-tls.json`、`updated-environment.json`、
+`updated-tests.log`、`updated-tls.json`、`matrix-min-certifi.log`、
+`matrix-min-certifi/*-tls.json`、`gateway-smoke.json`。
+従来の手順へ戻した後の再確認ログは同フォルダの `traditional-uv/` に保存。
+追加の実モデル生成結果は `live-generation.json`、サーバーログの該当部分は `live-generation-server.log` に保存。
+
+### 公式情報
+
+- [対象証明書と 14 接続先・チェーン資料](https://emudhra.we-have-a-problem.com/)
+- [Mozilla のインシデント報告](https://bugzilla.mozilla.org/show_bug.cgi?id=2083449)
+- [Apple の対応と標準 CA ファイルの注意点](https://support.apple.com/en-us/149555)
+- [Python 各系列の ssl 修正](https://blog.python.org/2026/10/python-3152-31410-31318-31216-31118/)
+- [Python 向け certifi / pip / uv の告知](https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576/1)
+- [uv 0.13.5 の追加対策](https://github.com/astral-sh/uv/releases/tag/0.13.5)
+- [uv 0.13.6 の Python カタログ](https://github.com/astral-sh/uv/releases/tag/0.13.6)
+- [OpenAI SDK の HTTPX2・証明書ストア変更](https://github.com/openai/openai-python/blob/main/httpx2.md)

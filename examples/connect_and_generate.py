@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["local-llm-client>=0.1"]
-# ///
 """ゲートウェイに接続して生成する最小サンプル（接続専用。サーバーは起動しない）。
 
 事前に別ターミナルでゲートウェイを起動しておくこと（gateway.toml に下記モデルを登録）:

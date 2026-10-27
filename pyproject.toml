@@ -3,7 +3,10 @@ name = "local-llm-client"
 version = "0.10.1"
 description = "ローカル LLM ゲートウェイ（local-llm-server / OpenAI 互換）に繋ぐ高レベルクライアント。エージェント共通のクライアントで、openai のボイラープレートを再実装しない（chat・画像・動画・音声認識/STT）。"
 readme = "README.md"
-requires-python = ">=3.11"
+# CPython ssl の eMudhra 侵害鍵拒否を含む最小パッチ:
+# 3.11.18 / 3.12.16 / 3.13.18 / 3.14.10 / 3.15.2。
+# Requires-Python は範囲の OR を表せないため、後続系列の未修正版を個別に除外する。
+requires-python = ">=3.11.18,!=3.12.0,!=3.12.1,!=3.12.2,!=3.12.3,!=3.12.4,!=3.12.5,!=3.12.6,!=3.12.7,!=3.12.8,!=3.12.9,!=3.12.10,!=3.12.11,!=3.12.12,!=3.12.13,!=3.12.14,!=3.12.15,!=3.13.0,!=3.13.1,!=3.13.2,!=3.13.3,!=3.13.4,!=3.13.5,!=3.13.6,!=3.13.7,!=3.13.8,!=3.13.9,!=3.13.10,!=3.13.11,!=3.13.12,!=3.13.13,!=3.13.14,!=3.13.15,!=3.13.16,!=3.13.17,!=3.14.0,!=3.14.1,!=3.14.2,!=3.14.3,!=3.14.4,!=3.14.5,!=3.14.6,!=3.14.7,!=3.14.8,!=3.14.9,!=3.15.0,!=3.15.1"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "ToPo-ToPo-ToPo" }]
@@ -19,8 +22,8 @@ classifiers = [
 ]
 # 公式 openai SDK を土台にする（自動リトライ・型付き応答・ツール呼び出し/構造化出力）。
 # サーバー（ゲートウェイ）は別パッケージ local-llm-server。本パッケージは接続のみ。
-# import するのは openai だけ（HTTP 層は openai.Timeout / TIMEOUT_ERRORS 越しに扱い、httpx /
-# httpx2 は直接 import しない。openai 3.0 で httpx → httpx2 に替わったため）。版の範囲は
+# HTTP 層は openai.Timeout / TIMEOUT_ERRORS 越しに扱い、httpx /
+# httpx2 は直接 import しない。openai 3.0 で httpx → httpx2 に替わったため。版の範囲は
 # scripts/check-fresh-venv.sh で空の venv に入れて確かめた範囲に合わせる:
 #   下限 1.55.3: それより前の openai は httpx 0.28 に無い proxies= を渡し、空の環境（httpx は最新が
 #                入る）ではクライアントを作れない。
@@ -28,6 +31,8 @@ classifiers = [
 #                メジャー（1〜3）に留める。4.x が出たら同じ手順で確かめてから広げる。
 dependencies = [
     "openai>=1.55.3,<4",
+    # HTTPX 系の内蔵 CA を持つ経路を、利用者の環境でも未修正版へ解決させない。
+    "certifi>=2026.10.19",
 ]
 
 [dependency-groups]
@@ -47,3 +52,7 @@ include = ["local_llm_client*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv]
+# 0.13.5 の侵害鍵拒否に加え、修正版 CPython の配布カタログが必要。
+required-version = ">=0.13.6"

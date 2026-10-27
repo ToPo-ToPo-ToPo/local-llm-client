@@ -5,6 +5,8 @@ __pycache__/
 build/
 dist/
 .venv/
+.venv-pre-emudhra-*/
+.tools/
 .pytest_cache/
 .python-version
 .claude/

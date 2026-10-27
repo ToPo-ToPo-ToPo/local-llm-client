@@ -5,14 +5,40 @@
 - サーバー（ゲートウェイ）は別パッケージ。これは**接続する側**（エージェント共通のクライアント）。
 - 各エージェントが openai のボイラープレート（メッセージ整形・画像入力・thinking 切替・ストリーム）を
   再実装しなくて済む。
-- 依存は公式 `openai` SDK のみ（`openai>=1.55.3,<4`。3.x で HTTP 層が httpx → httpx2 に替わったが、
+- 依存は公式 `openai` SDK と、CA ストアの安全な下限を保証する `certifi>=2026.10.19`
+  （`openai>=1.55.3,<4`。3.x で HTTP 層が httpx → httpx2 に替わったが、
   どちらでも動く。版の範囲は `scripts/check-fresh-venv.sh` で空の venv に入れて確かめている）。
 
 ## インストール
 
+CPython の最小パッチ版は系列ごとに **3.11.18 / 3.12.16 / 3.13.18 / 3.14.10 / 3.15.2**。
+eMudhra 侵害鍵の標準 TLS での拒否を含む版が必要。開発・検証には **3.13.18** を使用する。
+詳しい通信経路・更新結果・未確認範囲は [TLS と実行環境](docs/connecting.md#tls-と実行環境emudhra-対応) を参照。
+
 ```bash
 uv add local-llm-client
 ```
+
+### このリポジトリの開発・実行
+
+従来どおり、インストール済みの **uv 0.13.6 以降**とプロジェクトの `.venv` を使う。
+Python は uv 標準の保存先で管理する。独自の起動スクリプトや `.python-version` は不要。
+新しく環境を構築する場合は、次を実行する:
+
+```bash
+uv python install 3.13.18
+uv sync --python 3.13.18 --locked
+uv run examples/connect_and_generate.py
+uv run pytest -q
+uv run python scripts/check-tls.py --output .tools/validation/tls.json
+CHECK_TLS=1 scripts/check-fresh-venv.sh
+```
+
+既存環境の Python を替える場合は、先に `.venv` を退避して保持してから構築する。
+例はこのリポジトリの `.venv` と `uv.lock` を使う。重複していた独立スクリプト用の依存宣言は
+削除した。ゲートウェイとモデルは別途起動・準備が必要。
+VS Code のワークスペース既定も `.venv` に設定している。以前にインタープリタを手動選択した
+ワークスペースでは、Python の選択表示が `.venv/bin/python` か確認する。
 
 ## 使い方
 
