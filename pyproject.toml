@@ -1,6 +1,6 @@
 [project]
 name = "local-llm-client"
-version = "0.10.1"
+version = "0.10.2"
 description = "ローカル LLM ゲートウェイ（local-llm-server / OpenAI 互換）に繋ぐ高レベルクライアント。エージェント共通のクライアントで、openai のボイラープレートを再実装しない（chat・画像・動画・音声認識/STT）。"
 readme = "README.md"
 # CPython ssl の eMudhra 侵害鍵拒否を含む最小パッチ:
