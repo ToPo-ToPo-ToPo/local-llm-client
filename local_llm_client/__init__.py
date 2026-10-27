@@ -2,7 +2,7 @@
 
 サーバー（ゲートウェイ）は別パッケージ `local-llm-server`。本パッケージは**接続する側**
 （エージェント共通のクライアント）だけを提供し、各エージェントが openai のボイラープレートを
-再実装しなくて済むようにする。依存は公式 `openai` SDK のみ。
+再実装しなくて済むようにする。公式 `openai` SDK と、その間接依存の修正済み下限を使用する。
 
     from local_llm_client import LLMClient, connect
 
@@ -11,6 +11,11 @@
     print(llm.respond("こんにちは", images=["photo.jpg"]))
 """
 from __future__ import annotations
+
+from ._runtime import require_supported_python as _require_supported_python
+
+_require_supported_python()
+del _require_supported_python
 
 from .client import (
     DEFAULT_BASE_URL,

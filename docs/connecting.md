@@ -128,7 +128,7 @@ curl -s http://127.0.0.1:8799/v1/chat/completions \
 `Requires-Python` は各系列の未修正パッチ版を除外する。古いパッチ版の利用者は同系列の
 修正版へ更新する必要がある。開発環境の Python の版指定は、公開パッケージの対応範囲とは別に管理する。
 Python 3.13.10 から 3.13.18 への更新で系列は変更していない。uv 0.11 系は影響範囲に含まれるため
-0.13 系へ変更した。ロックされた依存パッケージの版変更は certifi のみ。
+0.13 系へ変更した。初回対応時のロック変更は certifi のみ。0.10.3 での追加対応は下記を参照。
 新 Python の OpenSSL は 3.5.9。`.zshrc`、pyenv の既定、OS の CA は変更していない。
 従来の手順を維持するため、通常の `uv python install 3.13.18`、`uv venv --python 3.13.18`、
 `uv sync --locked` で構築し、`uv run` で実行する。Python とキャッシュは uv 標準の場所を使う。
@@ -218,3 +218,52 @@ uv 標準の保存先へ合わせた。汎用 `python` / `python3` の既定選�
 - [uv 0.13.5 の追加対策](https://github.com/astral-sh/uv/releases/tag/0.13.5)
 - [uv 0.13.6 の Python カタログ](https://github.com/astral-sh/uv/releases/tag/0.13.6)
 - [OpenAI SDK の HTTPX2・証明書ストア変更](https://github.com/openai/openai-python/blob/main/httpx2.md)
+
+### 0.10.3: 公開依存要件の補完（2026-10-28）
+
+開発環境のロック更新だけでは、PyPI 利用者の既存環境に修正前の間接依存が残り得る。
+0.10.3 では配布 wheel / sdist の `Requires-Dist` にも次の下限を追加した。
+OpenAI 1〜3 系の対応は維持する。HTTP 層を SDK の版で条件分岐した依存宣言はできないため、
+httpx / httpx2 の両方をインストールする。コードが使用するのは選択した SDK の既定 HTTP 層。
+
+| 依存 | 公開要件の下限 | 開発環境のロック・実行版 | 理由 |
+| --- | --- | --- | --- |
+| OpenAI SDK | 1.55.3、上限 <4 | 2.44.0 | 従来の対応範囲を維持 |
+| certifi | 2026.10.19 | 2026.10.19 | eMudhra の CA 除外 |
+| AnyIO | 4.14.2、上限 <5 | 4.15.1 | TLS ホスト名検証などの修正 |
+| httpx / httpcore | 0.28.1 / 1.0.9 | 0.28.1 / 1.0.9 | SDK 1・2 系と h11>=0.16 の framing 修正 |
+| httpx2 | 2.12.0、上限 <3 | 2.16.0 | SDK 3 系の HTTP framing・解凍処理などの修正 |
+| tqdm | 4.66.3、上限 <5 | 4.68.4 | 古い SDK が許可する脆弱版を除外 |
+| Pydantic | 1.10.20、2.0〜2.3 は除外、上限 <3 | 2.13.4 | EmailStr の修正済み範囲（1.10.13 / 2.4.0 以降）。1 系の下限は Python 3.13 対応も含む |
+| typing-extensions | 4.12.2、上限 <5 | 4.16.0 | 最小構成で確認した Python 3.13 の ParamSpec 非互換を回避 |
+| setuptools（ビルド用） | 84.1.0 | wheel の Generator に記録 | ビルドと旧 wheel インストール処理の脆弱版を除外 |
+
+Python の下限は引き続き系列ごとに 3.11.18 / 3.12.16 / 3.13.18 / 3.14.10 / 3.15.2。
+`Requires-Python` の除外はパッチ系列の `!=3.13.17.*` などで記載する。
+ただし uv 0.13.6 の依存解決は途中の Python 除外区間を無視するケースがあった。
+そのため import の最初にも版を検査し、未修正 Python では HTTP SDK を読み込む前に
+必要な更新版を表示して停止する。独自の起動スクリプトは導入しない。
+
+検証では配布 wheel をソースツリーの外の空環境へ入れた。
+Python 3.11.18 上の OpenAI 1.55.3 / 2.0.0 / 2.54.0 / 3.0.0 / 3.39.0 で各 102 テストが成功。
+各環境で urllib / SDK の正常対照が成功し、それぞれ問題の 14/14 件を証明書検証で拒否した。
+Python 3.13.18 の最小依存構成でも既存機能を検証し、開発環境では通常応答「2」と
+ストリーミング応答「東京」を既存のローカル LLM から取得した。
+
+実際の配布要件を使った依存解決では修正前の 11 構成が拒否された。
+pip 26.2.2 で上記 5 系列の未修正 Python を拒否し、実際の各旧 Python から wheel を
+読み込んだ場合も、通信開始前に停止することを確認した。
+最小依存とロック環境を PyPI の脆弱性情報で照合し、該当・取得失敗とも 0 件。
+この照合は実施時点の公開情報の範囲であり、将来のすべての脆弱性を保証するものではない。
+CI・コンテナ・他 OS・独自 TLS の未確認範囲は前節のまま。
+
+ログは `.tools/validation/dependency-security-20261028/` に保存する（配布物・Git の対象外）。
+`client-matrix.log`、`client-min-tests.log`、`client-min-tls.json`、
+`client-current-advisories.json`、`public-resolver-results.json` で依存の実測・判定理由を追える。
+
+追加の根拠:
+
+- [AnyIO の TLS 修正](https://github.com/agronholm/anyio/security/advisories/GHSA-82r6-8w77-94w6)
+- [HTTPX2 の修正一覧](https://github.com/pydantic/httpx2/security/advisories)
+- [setuptools 84.1.0 の修正](https://github.com/pypa/setuptools/security/advisories/GHSA-xmj3-9gf7-h52w)
+- [uv の Requires-Python 解決方針](https://docs.astral.sh/uv/reference/resolver-internals/#requires-python)
